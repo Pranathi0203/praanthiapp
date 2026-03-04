@@ -1,0 +1,42 @@
+name: CI - Build & Push
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  IMAGE_NAME: myapp
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+
+      - name: ACR login
+        run: az acr login --name ${{ secrets.ACR_NAME }}
+
+      - name: Build & push
+        run: |
+          TAG=${GITHUB_SHA}
+          LOGIN_SERVER=$(az acr show -n ${{ secrets.ACR_NAME }} --query loginServer -o tsv)
+          docker build -t $LOGIN_SERVER/${IMAGE_NAME}:$TAG .
+          docker push $LOGIN_SERVER/${IMAGE_NAME}:$TAG
+          echo "$LOGIN_SERVER/${IMAGE_NAME}:$TAG" > image.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-metadata
+          path: image.txt
