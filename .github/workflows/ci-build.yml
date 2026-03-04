@@ -21,26 +21,24 @@ jobs:
       - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
+          auth-type: OIDC
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
 
       - name: Debug Azure + ACR
         run: |
-          echo "ACR_NAME(from secrets)='${{ secrets.ACR_NAME }}'"
+          echo "ACR_NAME='${{ secrets.ACR_NAME }}'"
           az account show -o table
-          echo "Registries in this subscription:"
-          az acr list --query "[].{name:name, rg:resourceGroup, loginServer:loginServer}" -o table
-          echo "Trying to find the registry:"
-          az acr show -n ${{ secrets.ACR_NAME }} --query "{name:name, rg:resourceGroup, loginServer:loginServer}" -o table
+          az acr show -n "${{ secrets.ACR_NAME }}" --query "{name:name, rg:resourceGroup, loginServer:loginServer}" -o table
 
       - name: ACR login
-        run: az acr login --name ${{ secrets.ACR_NAME }}
+        run: az acr login --name "${{ secrets.ACR_NAME }}"
 
       - name: Build & push
         run: |
           TAG=${GITHUB_SHA}
-          LOGIN_SERVER=$(az acr show -n ${{ secrets.ACR_NAME }} --query loginServer -o tsv)
+          LOGIN_SERVER=$(az acr show -n "${{ secrets.ACR_NAME }}" --query loginServer -o tsv)
           docker build -t $LOGIN_SERVER/${IMAGE_NAME}:$TAG .
           docker push $LOGIN_SERVER/${IMAGE_NAME}:$TAG
           echo "$LOGIN_SERVER/${IMAGE_NAME}:$TAG" > image.txt
