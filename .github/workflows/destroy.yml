@@ -1,6 +1,6 @@
 name: Terraform Destroy
 concurrency:
-  group: tf-destroy-${{ github.repository }}-${{ inputs.environment }}
+  group: tf-${{ github.repository }}-${{ inputs.environment }}-${{ vars.WEBAPP_NAME }}
   cancel-in-progress: false
 on:
   workflow_dispatch:
