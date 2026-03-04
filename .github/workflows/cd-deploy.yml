@@ -35,6 +35,12 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
 
+      - name: Who am I (Azure)
+        run: |
+          echo "AZURE_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}"
+          az account show -o table
+          az ad sp show --id ${{ secrets.AZURE_CLIENT_ID }} --query "{displayName:displayName, appId:appId, spObjectId:id}" -o table
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.7.5
