@@ -5,9 +5,8 @@ terraform {
   }
 }
 
-resource "azurerm_resource_group" "rg" {
-  name     = var.rg_name
-  location = var.location
+data "azurerm_resource_group" "rg" {
+  name = var.rg_name
 }
 
 data "azurerm_container_registry" "acr" {
@@ -17,16 +16,16 @@ data "azurerm_container_registry" "acr" {
 
 resource "azurerm_service_plan" "plan" {
   name                = var.plan_name
-  resource_group_name = azurerm_resource_group.rg.name
-  location            = azurerm_resource_group.rg.location
+  resource_group_name = data.azurerm_resource_group.rg.name
+  location            = data.azurerm_resource_group.rg.location
   os_type             = "Linux"
   sku_name            = var.plan_sku
 }
 
 resource "azurerm_linux_web_app" "app" {
   name                = var.webapp_name
-  resource_group_name = azurerm_resource_group.rg.name
-  location            = azurerm_resource_group.rg.location
+  resource_group_name = data.azurerm_resource_group.rg.name
+  location            = data.azurerm_resource_group.rg.location
   service_plan_id     = azurerm_service_plan.plan.id
 
   identity { type = "SystemAssigned" }
