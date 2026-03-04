@@ -18,52 +18,57 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
-    env:
-      ARM_USE_OIDC: true
-      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    environment: dev
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Azure login (OIDC)
+      
+      - name: Azure Login
         uses: azure/login@v2
         with:
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          client-id: ${{ secrets.ARM_CLIENT_ID }}
+          tenant-id: ${{ secrets.ARM_TENANT_ID }}
+          subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
 
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.7.5
-
-      - name: Terraform init
-        working-directory: infra/envs/${{ inputs.environment }}
+      
+      - name: Debug Azure identity + subscription
         run: |
-          terraform init \
-            -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}" \
-            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE }}" \
-            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
-            -backend-config="key=${{ vars.WEBAPP_NAME }}.tfstate"
+          az account show --query "{sub:id, tenant:tenantId, user:user.name}" -o table
+          az ad sp show --id "${{ secrets.ARM_CLIENT_ID }}" --query "{displayName:displayName, appId:appId, objectId:id}" -o table
 
-      - name: Terraform plan
-        working-directory: infra/envs/${{ inputs.environment }}
+      
+      - name: Debug ACR read (must succeed)
+        run: |
+          az acr show -n "pranathiappacr7182" -g "rg-pranathiapp-shared" --query "{name:name, id:id}" -o json
+
+     
+      - name: Terraform Init
+        run: terraform init
+        env:
+          ARM_USE_OIDC: true
+          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      
+      - name: Terraform Plan
         run: |
           terraform plan \
-            -var="location=${{ vars.LOCATION }}" \
-            -var="rg_name=${{ vars.RG_NAME }}" \
-            -var="acr_name=${{ secrets.ACR_NAME }}" \
-            -var="acr_rg_name=${{ vars.ACR_RG_NAME }}" \
-            -var="plan_name=${{ vars.PLAN_NAME }}" \
-            -var="plan_sku=${{ vars.PLAN_SKU }}" \
-            -var="webapp_name=${{ vars.WEBAPP_NAME }}" \
+            -var="location=westus3" \
+            -var="rg_name=rg-pranathiapp-dev" \
+            -var="acr_name=pranathiappacr7182" \
+            -var="acr_rg_name=rg-pranathiapp-shared" \
+            -var="plan_name=asp-pranathiapp-dev" \
+            -var="plan_sku=B1" \
+            -var="webapp_name=myappdev" \
             -var="image_name=myapp" \
-            -var="image_tag=${{ inputs.image_tag }}" \
-            -var="container_port=${{ vars.CONTAINER_PORT }}" \
+            -var="image_tag=${{ github.sha }}" \
+            -var="container_port=8000" \
             -out=tfplan
-
-      - name: Terraform apply
-        working-directory: infra/envs/${{ inputs.environment }}
-        run: terraform apply -auto-approve tfplan
+        env:
+          ARM_USE_OIDC: true
+          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
