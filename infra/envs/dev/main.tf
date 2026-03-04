@@ -1,5 +1,6 @@
 provider "azurerm" {
   features {}
+  resource_provider_registrations = "none"
 }
 module "app" {
   source         = "../../modules/webapp_container"
