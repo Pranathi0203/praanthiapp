@@ -7,6 +7,9 @@ on:
         type: choice
         required: true
         options: [ dev, qa ]
+      image_tag:
+        description: "ACR image tag to deploy (use a commit SHA from CI)"
+        required: true
 
 permissions:
   id-token: write
@@ -19,17 +22,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: image-metadata
-          path: .
-
-      - name: Parse image info
-        run: |
-          FULL_IMAGE=$(cat image.txt)
-          echo "IMAGE_TAG=${FULL_IMAGE##*:}" >> $GITHUB_ENV
-          echo "IMAGE_NAME=$(echo $FULL_IMAGE | awk -F/ '{print $2}' | awk -F: '{print $1}')" >> $GITHUB_ENV
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -62,8 +54,8 @@ jobs:
             -var="plan_name=${{ vars.PLAN_NAME }}" \
             -var="plan_sku=${{ vars.PLAN_SKU }}" \
             -var="webapp_name=${{ vars.WEBAPP_NAME }}" \
-            -var="image_name=${IMAGE_NAME}" \
-            -var="image_tag=${IMAGE_TAG}" \
+            -var="image_name=myapp" \
+            -var="image_tag=${{ inputs.image_tag }}" \
             -var="container_port=${{ vars.CONTAINER_PORT }}" \
             -out=tfplan
 
