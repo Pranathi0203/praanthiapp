@@ -1,3 +1,6 @@
+provider "azurerm" {
+  features {}
+}
 module "app" {
   source         = "../../modules/webapp_container"
   location       = var.location
