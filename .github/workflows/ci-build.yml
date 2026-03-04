@@ -25,6 +25,15 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
 
+      - name: Debug Azure + ACR
+        run: |
+          echo "ACR_NAME(from secrets)='${{ secrets.ACR_NAME }}'"
+          az account show -o table
+          echo "Registries in this subscription:"
+          az acr list --query "[].{name:name, rg:resourceGroup, loginServer:loginServer}" -o table
+          echo "Trying to find the registry:"
+          az acr show -n ${{ secrets.ACR_NAME }} --query "{name:name, rg:resourceGroup, loginServer:loginServer}" -o table
+
       - name: ACR login
         run: az acr login --name ${{ secrets.ACR_NAME }}
 
