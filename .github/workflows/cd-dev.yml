@@ -1,0 +1,87 @@
+name: CD - Deploy DEV (auto after CI)
+
+on:
+  workflow_run:
+    workflows: ["CI - Build & Push"]
+    types: [completed]
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read   # needed to download artifacts from CI run
+
+jobs:
+  deploy_dev:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    environment: dev
+
+    env:
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      IMAGE_NAME: myapp
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download image tag artifact from CI
+        uses: actions/download-artifact@v4
+        with:
+          name: image-metadata
+          path: .
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read image tag
+        id: meta
+        run: |
+          cat image.txt
+          TAG="$(cut -d: -f2 image.txt)"
+          echo "image_tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Using tag=$TAG"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      - name: Terraform init (dev)
+        working-directory: infra/envs/dev
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE }}" \
+            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.WEBAPP_NAME }}.tfstate"
+
+      - name: Terraform apply (dev)
+        working-directory: infra/envs/dev
+        run: |
+          terraform apply -auto-approve \
+            -var="location=${{ vars.LOCATION }}" \
+            -var="rg_name=${{ vars.RG_NAME }}" \
+            -var="acr_name=${{ secrets.ACR_NAME }}" \
+            -var="acr_rg_name=${{ vars.ACR_RG_NAME }}" \
+            -var="plan_name=${{ vars.PLAN_NAME }}" \
+            -var="plan_sku=${{ vars.PLAN_SKU }}" \
+            -var="webapp_name=${{ vars.WEBAPP_NAME }}" \
+            -var="image_name=${{ env.IMAGE_NAME }}" \
+            -var="image_tag=${{ steps.meta.outputs.image_tag }}" \
+            -var="container_port=${{ vars.CONTAINER_PORT }}"
+
+      - name: Publish tag for QA
+        run: |
+          echo "${{ steps.meta.outputs.image_tag }}" > promoted_tag.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: promoted-tag
+          path: promoted_tag.txt
