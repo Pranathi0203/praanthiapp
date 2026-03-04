@@ -18,55 +18,72 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: dev
+
+    # ✅ use the selected environment (dev or qa)
+    environment: ${{ inputs.environment }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      
-      - name: Azure Login
+      # ✅ OIDC login (do NOT set auth-type SERVICE_PRINCIPAL)
+      - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.ARM_CLIENT_ID }}
           tenant-id: ${{ secrets.ARM_TENANT_ID }}
           subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
 
-      
+      - name: Debug inputs
+        run: |
+          echo "ENV=${{ inputs.environment }}"
+          echo "IMAGE_TAG=${{ inputs.image_tag }}"
+
       - name: Debug Azure identity + subscription
         run: |
           az account show --query "{sub:id, tenant:tenantId, user:user.name}" -o table
           az ad sp show --id "${{ secrets.ARM_CLIENT_ID }}" --query "{displayName:displayName, appId:appId, objectId:id}" -o table
 
-      
+      # ✅ prove CI can read the ACR you granted access to
       - name: Debug ACR read (must succeed)
         run: |
           az acr show -n "pranathiappacr7182" -g "rg-pranathiapp-shared" --query "{name:name, id:id}" -o json
 
-     
+      # If terraform is not in repo root, change ./infra (example) to your folder
       - name: Terraform Init
         run: terraform init
+        working-directory: .
         env:
           ARM_USE_OIDC: true
           ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
           ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
 
-      
-      - name: Terraform Plan
+      - name: Terraform Plan (env-aware)
         run: |
+          if [ "${{ inputs.environment }}" = "qa" ]; then
+            RG="rg-pranathiapp-qa"
+            PLAN="asp-pranathiapp-qa"
+            WEBAPP="myappqa"
+          else
+            RG="rg-pranathiapp-dev"
+            PLAN="asp-pranathiapp-dev"
+            WEBAPP="myappdev"
+          fi
+
           terraform plan \
             -var="location=westus3" \
-            -var="rg_name=rg-pranathiapp-dev" \
+            -var="rg_name=$RG" \
             -var="acr_name=pranathiappacr7182" \
             -var="acr_rg_name=rg-pranathiapp-shared" \
-            -var="plan_name=asp-pranathiapp-dev" \
+            -var="plan_name=$PLAN" \
             -var="plan_sku=B1" \
-            -var="webapp_name=myappdev" \
+            -var="webapp_name=$WEBAPP" \
             -var="image_name=myapp" \
-            -var="image_tag=${{ github.sha }}" \
+            -var="image_tag=${{ inputs.image_tag }}" \
             -var="container_port=8000" \
             -out=tfplan
+        working-directory: .
         env:
           ARM_USE_OIDC: true
           ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
