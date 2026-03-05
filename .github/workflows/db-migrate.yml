@@ -61,10 +61,13 @@ jobs:
 
       - name: Run Liquibase update
         run: |
+          echo "Workspace: ${GITHUB_WORKSPACE}"
+          ls -la "${GITHUB_WORKSPACE}/liquibase/changelog"
           docker run --rm \
-            -v "${GITHUB_WORKSPACE}/liquibase/changelog:/liquibase/changelog" \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
+            --workdir /workspace \
             liquibase/liquibase:4.30 \
-            --changeLogFile=/liquibase/changelog/db.changelog-master.yaml \
+            --changeLogFile=/workspace/liquibase/changelog/db.changelog-master.yaml \
             --url="jdbc:postgresql://${DB_HOST}:5432/${DB_NAME}?sslmode=require" \
             --username="${DB_USER}" \
             --password="${DB_PASSWORD}" \
