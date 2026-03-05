@@ -1,0 +1,71 @@
+name: DB - Liquibase Migrate
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        required: true
+        options: [dev, qa]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      - name: Terraform init
+        working-directory: infra/envs/${{ inputs.environment }}
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE }}" \
+            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
+            -backend-config="key=${{ inputs.environment }}/${{ vars.WEBAPP_NAME }}.tfstate"
+
+      - name: Load DB secrets from Key Vault
+        working-directory: infra/envs/${{ inputs.environment }}
+        run: |
+          KV_NAME="$(terraform output -raw key_vault_name)"
+          echo "KV_NAME=$KV_NAME" >> "$GITHUB_ENV"
+          DB_HOST="$(az keyvault secret show --vault-name "$KV_NAME" --name db-host --query value -o tsv)"
+          DB_NAME="$(az keyvault secret show --vault-name "$KV_NAME" --name db-name --query value -o tsv)"
+          DB_USER="$(az keyvault secret show --vault-name "$KV_NAME" --name db-username --query value -o tsv)"
+          DB_PASSWORD="$(az keyvault secret show --vault-name "$KV_NAME" --name db-password --query value -o tsv)"
+          echo "DB_HOST=$DB_HOST" >> "$GITHUB_ENV"
+          echo "DB_NAME=$DB_NAME" >> "$GITHUB_ENV"
+          echo "DB_USER=$DB_USER" >> "$GITHUB_ENV"
+          echo "DB_PASSWORD=$DB_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Run Liquibase update
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}/liquibase/changelog:/liquibase/changelog" \
+            liquibase/liquibase:4.30 \
+            --changeLogFile=/liquibase/changelog/db.changelog-master.yaml \
+            --url="jdbc:postgresql://${DB_HOST}:5432/${DB_NAME}?sslmode=require" \
+            --username="${DB_USER}" \
+            --password="${DB_PASSWORD}" \
+            update

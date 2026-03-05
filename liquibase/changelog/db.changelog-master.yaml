@@ -1,0 +1,8 @@
+databaseChangeLog:
+  - changeSet:
+      id: 001-create-users-table
+      author: pranathi
+      changes:
+        - sqlFile:
+            path: 001-create-users-table.sql
+            relativeToChangelogFile: true

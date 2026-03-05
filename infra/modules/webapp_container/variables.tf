@@ -1,16 +1,16 @@
-variable "location"    { type = string }
-variable "rg_name"     { type = string }
-variable "env_name"    { type = string }
+variable "location" { type = string }
+variable "rg_name" { type = string }
+variable "env_name" { type = string }
 
-variable "acr_name"    { type = string }
+variable "acr_name" { type = string }
 variable "acr_rg_name" { type = string }
 
-variable "plan_name"   { type = string }
-variable "plan_sku"    { type = string }
+variable "plan_name" { type = string }
+variable "plan_sku" { type = string }
 variable "webapp_name" { type = string }
 
-variable "image_name"  { type = string }
-variable "image_tag"   { type = string }
+variable "image_name" { type = string }
+variable "image_tag" { type = string }
 
 variable "container_port" {
   type    = number
@@ -20,4 +20,44 @@ variable "container_port" {
 variable "app_settings" {
   type    = map(string)
   default = {}
+}
+
+variable "postgres_version" {
+  type    = string
+  default = "14"
+}
+
+variable "postgres_sku_name" {
+  type    = string
+  default = "B_Standard_B1ms"
+}
+
+variable "postgres_storage_mb" {
+  type    = number
+  default = 32768
+}
+
+variable "postgres_database_name" {
+  type    = string
+  default = "appdb"
+}
+
+variable "apim_sku_name" {
+  type    = string
+  default = "Developer_1"
+}
+
+variable "apim_publisher_name" {
+  type    = string
+  default = "Pranathi App"
+}
+
+variable "apim_publisher_email" {
+  type    = string
+  default = "admin@pranathiapp.local"
+}
+
+variable "webapp_request_alert_threshold" {
+  type    = number
+  default = 100
 }
