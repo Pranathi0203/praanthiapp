@@ -10,8 +10,15 @@
     <main class="container">
       <h1>Dashboard</h1>
       <p class="ok">Welcome, <strong>{{ user_email }}</strong></p>
+      <p>Organization: <strong>{{ organization|upper }}</strong></p>
       <div class="card">
-        <p>You are logged in.</p>
+        <p>You can see employees from your organization only.</p>
+        <p><strong>Employees ({{ employees|length }})</strong></p>
+        <ul>
+          {% for e in employees %}
+          <li>{{ e }}</li>
+          {% endfor %}
+        </ul>
         <a class="btn secondary" href="/logout">Logout</a>
       </div>
       <p><a href="/">Back home</a></p>

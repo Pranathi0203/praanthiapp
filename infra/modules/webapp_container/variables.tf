@@ -42,6 +42,16 @@ variable "postgres_database_name" {
   default = "appdb"
 }
 
+variable "contoso_database_name" {
+  type    = string
+  default = "contoso_db"
+}
+
+variable "litware_database_name" {
+  type    = string
+  default = "litware_db"
+}
+
 variable "apim_sku_name" {
   type    = string
   default = "Developer_1"

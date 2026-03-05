@@ -94,6 +94,8 @@ resource "azurerm_linux_web_app" "app" {
     "DB_USERNAME"                           = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_username.versionless_id})"
     "DB_PASSWORD"                           = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_password.versionless_id})"
     "DATABASE_URL"                          = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_connection_string.versionless_id})"
+    "CONTOSO_DATABASE_URL"                  = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_db_connection_string.versionless_id})"
+    "LITWARE_DATABASE_URL"                  = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_db_connection_string.versionless_id})"
     "APIM_LOGIN_PATH"                       = "/auth/login"
     "APIM_SIGNUP_PATH"                      = "/auth/signup"
     "APPLICATIONINSIGHTS_CONNECTION_STRING" = azurerm_application_insights.app.connection_string
@@ -136,6 +138,20 @@ resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_azure_service
 
 resource "azurerm_postgresql_flexible_server_database" "app" {
   name      = var.postgres_database_name
+  server_id = azurerm_postgresql_flexible_server.db.id
+  charset   = "UTF8"
+  collation = "en_US.utf8"
+}
+
+resource "azurerm_postgresql_flexible_server_database" "contoso" {
+  name      = var.contoso_database_name
+  server_id = azurerm_postgresql_flexible_server.db.id
+  charset   = "UTF8"
+  collation = "en_US.utf8"
+}
+
+resource "azurerm_postgresql_flexible_server_database" "litware" {
+  name      = var.litware_database_name
   server_id = azurerm_postgresql_flexible_server.db.id
   charset   = "UTF8"
   collation = "en_US.utf8"
@@ -196,6 +212,20 @@ resource "azurerm_key_vault_secret" "db_password" {
 resource "azurerm_key_vault_secret" "db_connection_string" {
   name         = "db-connection-string"
   value        = "postgresql://${azurerm_postgresql_flexible_server.db.administrator_login}:${random_password.db_admin_password.result}@${azurerm_postgresql_flexible_server.db.fqdn}:5432/${azurerm_postgresql_flexible_server_database.app.name}?sslmode=require"
+  key_vault_id = azurerm_key_vault.app.id
+  depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
+}
+
+resource "azurerm_key_vault_secret" "contoso_db_connection_string" {
+  name         = "contoso-db-connection-string"
+  value        = "postgresql://${azurerm_postgresql_flexible_server.db.administrator_login}:${random_password.db_admin_password.result}@${azurerm_postgresql_flexible_server.db.fqdn}:5432/${azurerm_postgresql_flexible_server_database.contoso.name}?sslmode=require"
+  key_vault_id = azurerm_key_vault.app.id
+  depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
+}
+
+resource "azurerm_key_vault_secret" "litware_db_connection_string" {
+  name         = "litware-db-connection-string"
+  value        = "postgresql://${azurerm_postgresql_flexible_server.db.administrator_login}:${random_password.db_admin_password.result}@${azurerm_postgresql_flexible_server.db.fqdn}:5432/${azurerm_postgresql_flexible_server_database.litware.name}?sslmode=require"
   key_vault_id = azurerm_key_vault.app.id
   depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
 }
