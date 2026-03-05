@@ -3,3 +3,5 @@ uvicorn[standard]
 jinja2
 python-multipart
 psycopg[binary]
+azure-monitor-opentelemetry
+opentelemetry-instrumentation-fastapi

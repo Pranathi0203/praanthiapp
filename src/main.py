@@ -1,19 +1,35 @@
 import hashlib
+import logging
 import os
 
 import psycopg
+from azure.monitor.opentelemetry import configure_azure_monitor
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 APP_SECRET = os.getenv("APP_SECRET", "change-me")
+APPINSIGHTS_CONNECTION_STRING = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
 
 app = FastAPI(title="Pranathi App")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+
+
+def setup_telemetry():
+    if not APPINSIGHTS_CONNECTION_STRING:
+        logging.getLogger(__name__).warning("Application Insights connection string not set.")
+        return
+
+    configure_azure_monitor(connection_string=APPINSIGHTS_CONNECTION_STRING)
+    FastAPIInstrumentor.instrument_app(app)
+
+
+setup_telemetry()
 
 
 def get_conn():
