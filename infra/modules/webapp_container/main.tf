@@ -247,23 +247,3 @@ resource "azurerm_api_management_api_operation" "signup" {
     status_code = 200
   }
 }
-
-resource "azurerm_monitor_metric_alert" "webapp_requests" {
-  name                = "${var.webapp_name}-${var.env_name}-high-requests"
-  resource_group_name = data.azurerm_resource_group.rg.name
-  scopes              = [azurerm_linux_web_app.app.id]
-  description         = "Alert when request volume is unexpectedly high."
-  severity            = 2
-  frequency           = "PT5M"
-  window_size         = "PT5M"
-  auto_mitigate       = true
-
-  criteria {
-    metric_namespace       = "Microsoft.Web/sites"
-    metric_name            = "Requests"
-    aggregation            = "Total"
-    operator               = "GreaterThan"
-    threshold              = var.webapp_request_alert_threshold
-    skip_metric_validation = true
-  }
-}

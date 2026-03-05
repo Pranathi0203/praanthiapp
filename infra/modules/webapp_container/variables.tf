@@ -56,8 +56,3 @@ variable "apim_publisher_email" {
   type    = string
   default = "admin@pranathiapp.local"
 }
-
-variable "webapp_request_alert_threshold" {
-  type    = number
-  default = 100
-}

@@ -53,6 +53,3 @@ output "apim_gateway_url" {
 output "application_insights_name" {
   value = module.app.application_insights_name
 }
-output "request_alert_name" {
-  value = module.app.request_alert_name
-}

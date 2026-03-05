@@ -26,7 +26,3 @@ output "application_insights_connection_string" {
   value     = azurerm_application_insights.app.connection_string
   sensitive = true
 }
-
-output "request_alert_name" {
-  value = azurerm_monitor_metric_alert.webapp_requests.name
-}
