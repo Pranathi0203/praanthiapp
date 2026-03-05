@@ -259,10 +259,11 @@ resource "azurerm_monitor_metric_alert" "webapp_requests" {
   auto_mitigate       = true
 
   criteria {
-    metric_namespace = "Microsoft.Web/sites"
-    metric_name      = "Requests"
-    aggregation      = "Total"
-    operator         = "GreaterThan"
-    threshold        = var.webapp_request_alert_threshold
+    metric_namespace       = "Microsoft.Web/sites"
+    metric_name            = "Requests"
+    aggregation            = "Total"
+    operator               = "GreaterThan"
+    threshold              = var.webapp_request_alert_threshold
+    skip_metric_validation = true
   }
 }
