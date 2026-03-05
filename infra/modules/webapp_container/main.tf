@@ -117,6 +117,13 @@ resource "azurerm_postgresql_flexible_server" "db" {
   storage_mb             = var.postgres_storage_mb
 
   backup_retention_days = 7
+
+  lifecycle {
+    ignore_changes = [
+      zone,
+      high_availability,
+    ]
+  }
 }
 
 resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_azure_services" {
