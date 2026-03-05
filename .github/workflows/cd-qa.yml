@@ -64,7 +64,7 @@ jobs:
       - name: Terraform apply (qa)
         working-directory: infra/envs/qa
         run: |
-          terraform apply -auto-approve -lock-timeout=10m \
+          terraform apply -auto-approve \
             -var="location=${{ vars.LOCATION }}" \
             -var="rg_name=${{ vars.RG_NAME }}" \
             -var="acr_name=${{ secrets.ACR_NAME }}" \
