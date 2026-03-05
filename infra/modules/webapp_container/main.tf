@@ -65,6 +65,7 @@ resource "azurerm_application_insights" "app" {
   location            = data.azurerm_resource_group.rg.location
   resource_group_name = data.azurerm_resource_group.rg.name
   application_type    = "web"
+  workspace_id        = "/subscriptions/df4637b0-01eb-4650-9feb-73300318eb52/resourceGroups/ai_myappdev0203-dev-appi-6760_05bf5ebf-8990-4306-ae01-9826506ffbb6_managed/providers/Microsoft.OperationalInsights/workspaces/managed-myappdev0203-dev-appi-6760-ws"
 }
 
 resource "azurerm_linux_web_app" "app" {
