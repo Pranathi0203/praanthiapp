@@ -46,16 +46,44 @@ jobs:
 
       - name: Ensure staging slot exists
         run: |
-          if ! az webapp deployment slot show \
-            --resource-group "${{ vars.RG_NAME }}" \
-            --name "${{ vars.WEBAPP_NAME }}" \
-            --slot staging >/dev/null 2>&1; then
-            az webapp deployment slot create \
+          SLOT_ERR_FILE="$(mktemp)"
+          CREATE_ERR_FILE="$(mktemp)"
+          SLOT_READY="false"
+
+          for attempt in {1..20}; do
+            if az webapp deployment slot show \
               --resource-group "${{ vars.RG_NAME }}" \
               --name "${{ vars.WEBAPP_NAME }}" \
-              --slot staging \
-              --configuration-source "${{ vars.WEBAPP_NAME }}"
+              --slot staging >/dev/null 2>"$SLOT_ERR_FILE"; then
+              SLOT_READY="true"
+              break
+            fi
+
+            if grep -q "ResourceNotFound" "$SLOT_ERR_FILE"; then
+              echo "Staging slot not found, creating it (attempt $attempt/20)."
+              if az webapp deployment slot create \
+                --resource-group "${{ vars.RG_NAME }}" \
+                --name "${{ vars.WEBAPP_NAME }}" \
+                --slot staging \
+                --configuration-source "${{ vars.WEBAPP_NAME }}" \
+                >/dev/null 2>"$CREATE_ERR_FILE"; then
+                SLOT_READY="true"
+                break
+              fi
+            fi
+
+            echo "Slot operation still busy or failed (attempt $attempt/20). Retrying in 15s..."
+            sleep 15
+          done
+
+          if [ "$SLOT_READY" != "true" ]; then
+            echo "Unable to verify or create staging slot after retries."
+            [ -s "$SLOT_ERR_FILE" ] && cat "$SLOT_ERR_FILE"
+            [ -s "$CREATE_ERR_FILE" ] && cat "$CREATE_ERR_FILE"
+            exit 1
           fi
+
+          rm -f "$SLOT_ERR_FILE" "$CREATE_ERR_FILE"
 
       - name: Deploy container to staging slot
         run: |

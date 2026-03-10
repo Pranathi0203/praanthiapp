@@ -9,8 +9,7 @@ on:
         options: [dev, qa]
       image_tag:
         description: Initial image tag for Web App container
-        required: false
-        default: latest
+        required: true
 
 permissions:
   id-token: write
@@ -54,6 +53,11 @@ jobs:
       - name: Terraform apply
         working-directory: infra/envs/${{ inputs.environment }}
         run: |
+          if [ -z "${{ inputs.image_tag }}" ]; then
+            echo "image_tag is required and must match a pushed ACR tag."
+            exit 1
+          fi
+
           terraform apply -auto-approve \
             -var="location=${{ vars.LOCATION }}" \
             -var="rg_name=${{ vars.RG_NAME }}" \
