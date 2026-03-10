@@ -1,4 +1,4 @@
-name: CD - Deploy QA App (staging -> production)
+name: CD - Deploy QA App (staging only)
 
 on:
   workflow_dispatch:
@@ -73,11 +73,3 @@ jobs:
             --resource-group "${{ vars.RG_NAME }}" \
             --name "${{ vars.WEBAPP_NAME }}" \
             --slot staging
-
-      - name: Swap staging to production
-        run: |
-          az webapp deployment slot swap \
-            --resource-group "${{ vars.RG_NAME }}" \
-            --name "${{ vars.WEBAPP_NAME }}" \
-            --slot staging \
-            --target-slot production
