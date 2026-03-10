@@ -49,6 +49,19 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
 
+      - name: Ensure staging slot exists
+        run: |
+          if ! az webapp deployment slot show \
+            --resource-group "${{ vars.RG_NAME }}" \
+            --name "${{ vars.WEBAPP_NAME }}" \
+            --slot staging >/dev/null 2>&1; then
+            az webapp deployment slot create \
+              --resource-group "${{ vars.RG_NAME }}" \
+              --name "${{ vars.WEBAPP_NAME }}" \
+              --slot staging \
+              --configuration-source "${{ vars.WEBAPP_NAME }}"
+          fi
+
       - name: Deploy container to staging slot
         run: |
           LOGIN_SERVER="$(az acr show -n "${{ secrets.ACR_NAME }}" --query loginServer -o tsv)"
