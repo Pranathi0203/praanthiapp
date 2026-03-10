@@ -10,6 +10,9 @@ on:
       image_tag:
         description: Initial image tag for Web App container
         required: true
+      allowed_client_cidr:
+        description: CIDR allowed to access the app and SCM endpoints
+        required: true
 
 permissions:
   id-token: write
@@ -58,6 +61,11 @@ jobs:
             exit 1
           fi
 
+          if [ -z "${{ inputs.allowed_client_cidr }}" ]; then
+            echo "allowed_client_cidr is required."
+            exit 1
+          fi
+
           terraform apply -auto-approve \
             -var="location=${{ vars.LOCATION }}" \
             -var="rg_name=${{ vars.RG_NAME }}" \
@@ -68,4 +76,5 @@ jobs:
             -var="webapp_name=${{ vars.WEBAPP_NAME }}" \
             -var="image_name=${{ env.IMAGE_NAME }}" \
             -var="image_tag=${{ inputs.image_tag }}" \
-            -var="container_port=${{ vars.CONTAINER_PORT }}"
+            -var="container_port=${{ vars.CONTAINER_PORT }}" \
+            -var="allowed_client_cidr=${{ inputs.allowed_client_cidr }}"

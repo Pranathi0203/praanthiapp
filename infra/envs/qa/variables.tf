@@ -37,3 +37,7 @@ variable "image_tag" {
 variable "container_port" {
   type = number
 }
+
+variable "allowed_client_cidr" {
+  type = string
+}

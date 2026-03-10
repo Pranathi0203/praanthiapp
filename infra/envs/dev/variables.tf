@@ -12,3 +12,4 @@ variable "image_name" { type = string }
 variable "image_tag" { type = string }
 
 variable "container_port" { type = number }
+variable "allowed_client_cidr" { type = string }

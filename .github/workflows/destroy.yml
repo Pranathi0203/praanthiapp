@@ -11,6 +11,10 @@ on:
         description: Image tag placeholder for Terraform variable resolution
         required: false
         default: destroy-placeholder
+      allowed_client_cidr:
+        description: CIDR placeholder for Terraform variable resolution
+        required: false
+        default: 0.0.0.0/32
 
 permissions:
   id-token: write
@@ -63,4 +67,5 @@ jobs:
             -var="webapp_name=${{ vars.WEBAPP_NAME }}" \
             -var="image_name=myapp" \
             -var="image_tag=${{ inputs.image_tag }}" \
-            -var="container_port=${{ vars.CONTAINER_PORT }}"
+            -var="container_port=${{ vars.CONTAINER_PORT }}" \
+            -var="allowed_client_cidr=${{ inputs.allowed_client_cidr }}"

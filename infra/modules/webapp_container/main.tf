@@ -29,6 +29,10 @@ locals {
     0,
     60
   )
+  vnet_name       = substr("${var.webapp_name}-${var.env_name}-vnet", 0, 64)
+  app_subnet_name = "appsvc-integration"
+  app_nsg_name    = substr("${var.webapp_name}-${var.env_name}-app-nsg", 0, 80)
+  allow_rule_name = "AllowCurrentClientIp"
   base_app_settings = {
     "WEBSITES_ENABLE_APP_SERVICE_STORAGE"   = "false"
     "PORT"                                  = tostring(var.container_port)
@@ -68,6 +72,40 @@ resource "random_password" "db_admin_password" {
   special = true
 }
 
+resource "azurerm_virtual_network" "app" {
+  name                = local.vnet_name
+  location            = data.azurerm_resource_group.rg.location
+  resource_group_name = data.azurerm_resource_group.rg.name
+  address_space       = var.vnet_address_space
+}
+
+resource "azurerm_network_security_group" "app" {
+  name                = local.app_nsg_name
+  location            = data.azurerm_resource_group.rg.location
+  resource_group_name = data.azurerm_resource_group.rg.name
+}
+
+resource "azurerm_subnet" "app_integration" {
+  name                 = local.app_subnet_name
+  resource_group_name  = data.azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.app.name
+  address_prefixes     = [var.app_subnet_cidr]
+
+  delegation {
+    name = "appservice-delegation"
+
+    service_delegation {
+      name    = "Microsoft.Web/serverFarms"
+      actions = ["Microsoft.Network/virtualNetworks/subnets/action"]
+    }
+  }
+}
+
+resource "azurerm_subnet_network_security_group_association" "app" {
+  subnet_id                 = azurerm_subnet.app_integration.id
+  network_security_group_id = azurerm_network_security_group.app.id
+}
+
 resource "azurerm_service_plan" "plan" {
   name                = var.plan_name
   resource_group_name = data.azurerm_resource_group.rg.name
@@ -92,8 +130,29 @@ resource "azurerm_linux_web_app" "app" {
 
   identity { type = "SystemAssigned" }
 
+  https_only                = true
+  virtual_network_subnet_id = azurerm_subnet.app_integration.id
+
   site_config {
-    always_on = true
+    always_on                               = true
+    vnet_route_all_enabled                  = true
+    ip_restriction_default_action           = "Deny"
+    scm_ip_restriction_default_action       = "Deny"
+    container_registry_use_managed_identity = true
+
+    ip_restriction {
+      name       = local.allow_rule_name
+      priority   = 100
+      action     = "Allow"
+      ip_address = var.allowed_client_cidr
+    }
+
+    scm_ip_restriction {
+      name       = local.allow_rule_name
+      priority   = 100
+      action     = "Allow"
+      ip_address = var.allowed_client_cidr
+    }
 
     application_stack {
       docker_registry_url = "https://${data.azurerm_container_registry.acr.login_server}"
@@ -110,8 +169,29 @@ resource "azurerm_linux_web_app_slot" "staging" {
 
   identity { type = "SystemAssigned" }
 
+  https_only                = true
+  virtual_network_subnet_id = azurerm_subnet.app_integration.id
+
   site_config {
-    always_on = true
+    always_on                               = true
+    vnet_route_all_enabled                  = true
+    ip_restriction_default_action           = "Deny"
+    scm_ip_restriction_default_action       = "Deny"
+    container_registry_use_managed_identity = true
+
+    ip_restriction {
+      name       = local.allow_rule_name
+      priority   = 100
+      action     = "Allow"
+      ip_address = var.allowed_client_cidr
+    }
+
+    scm_ip_restriction {
+      name       = local.allow_rule_name
+      priority   = 100
+      action     = "Allow"
+      ip_address = var.allowed_client_cidr
+    }
 
     application_stack {
       docker_registry_url = "https://${data.azurerm_container_registry.acr.login_server}"

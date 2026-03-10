@@ -30,7 +30,8 @@ module "app" {
   image_name = var.image_name
   image_tag  = var.image_tag
 
-  container_port = var.container_port
+  container_port      = var.container_port
+  allowed_client_cidr = var.allowed_client_cidr
 
   # Optional extra settings
   app_settings = {

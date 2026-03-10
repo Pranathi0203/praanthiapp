@@ -21,6 +21,25 @@ variable "container_port" {
   default = 8000
 }
 
+variable "allowed_client_cidr" {
+  type = string
+}
+
+variable "vnet_address_space" {
+  type    = list(string)
+  default = ["10.20.0.0/16"]
+}
+
+variable "app_subnet_cidr" {
+  type    = string
+  default = "10.20.1.0/24"
+}
+
+variable "db_subnet_cidr" {
+  type    = string
+  default = "10.20.2.0/24"
+}
+
 variable "app_settings" {
   type    = map(string)
   default = {}
