@@ -1,4 +1,4 @@
-name: CD - Deploy DEV (auto after CI)
+name: CD - Deploy DEV App (staging -> production)
 
 on:
   workflow_run:
@@ -8,10 +8,10 @@ on:
 permissions:
   id-token: write
   contents: read
-  actions: read   # needed to download artifacts from CI run
+  actions: read
 
 concurrency:
-  group: tf-dev-${{ github.repository }}
+  group: app-dev-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -21,10 +21,6 @@ jobs:
     environment: dev
 
     env:
-      ARM_USE_OIDC: true
-      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       IMAGE_NAME: myapp
 
     steps:
@@ -43,7 +39,7 @@ jobs:
         run: |
           cat image.txt
           TAG="$(cut -d: -f2 image.txt)"
-          echo "image_tag=$TAG" >> $GITHUB_OUTPUT
+          echo "image_tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Using tag=$TAG"
 
       - name: Azure login (OIDC)
@@ -53,33 +49,30 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
 
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.7.5
-
-      - name: Terraform init (dev)
-        working-directory: infra/envs/dev
+      - name: Deploy container to staging slot
         run: |
-          terraform init \
-            -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}" \
-            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE }}" \
-            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
-            -backend-config="key=dev/${{ vars.WEBAPP_NAME }}.tfstate"
+          LOGIN_SERVER="$(az acr show -n "${{ secrets.ACR_NAME }}" --query loginServer -o tsv)"
+          IMAGE_REF="$LOGIN_SERVER/${IMAGE_NAME}:${{ steps.meta.outputs.image_tag }}"
+          echo "Deploying image: $IMAGE_REF"
 
-      - name: Terraform apply (dev)
-        working-directory: infra/envs/dev
+          az webapp config container set \
+            --resource-group "${{ vars.RG_NAME }}" \
+            --name "${{ vars.WEBAPP_NAME }}" \
+            --slot staging \
+            --container-image-name "$IMAGE_REF"
+
+          az webapp restart \
+            --resource-group "${{ vars.RG_NAME }}" \
+            --name "${{ vars.WEBAPP_NAME }}" \
+            --slot staging
+
+      - name: Swap staging to production
         run: |
-          terraform apply -auto-approve \
-            -var="location=${{ vars.LOCATION }}" \
-            -var="rg_name=${{ vars.RG_NAME }}" \
-            -var="acr_name=${{ secrets.ACR_NAME }}" \
-            -var="acr_rg_name=${{ vars.ACR_RG_NAME }}" \
-            -var="plan_name=${{ vars.PLAN_NAME }}" \
-            -var="plan_sku=${{ vars.PLAN_SKU }}" \
-            -var="webapp_name=${{ vars.WEBAPP_NAME }}" \
-            -var="image_name=${{ env.IMAGE_NAME }}" \
-            -var="image_tag=${{ steps.meta.outputs.image_tag }}" \
-            -var="container_port=${{ vars.CONTAINER_PORT }}"
+          az webapp deployment slot swap \
+            --resource-group "${{ vars.RG_NAME }}" \
+            --name "${{ vars.WEBAPP_NAME }}" \
+            --slot staging \
+            --target-slot production
 
       - name: Publish tag for QA
         run: |

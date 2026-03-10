@@ -2,6 +2,10 @@ output "webapp_url" {
   value = "https://${azurerm_linux_web_app.app.default_hostname}"
 }
 
+output "staging_slot_url" {
+  value = "https://${azurerm_linux_web_app_slot.staging.default_hostname}"
+}
+
 output "key_vault_name" {
   value = azurerm_key_vault.app.name
 }

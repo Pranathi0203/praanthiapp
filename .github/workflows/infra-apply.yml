@@ -1,0 +1,67 @@
+name: Terraform Apply (manual infra provisioning)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        required: true
+        options: [dev, qa]
+      image_tag:
+        description: Initial image tag for Web App container
+        required: false
+        default: latest
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    env:
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      IMAGE_NAME: myapp
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      - name: Terraform init
+        working-directory: infra/envs/${{ inputs.environment }}
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE }}" \
+            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
+            -backend-config="key=${{ inputs.environment }}/${{ vars.WEBAPP_NAME }}.tfstate"
+
+      - name: Terraform apply
+        working-directory: infra/envs/${{ inputs.environment }}
+        run: |
+          terraform apply -auto-approve \
+            -var="location=${{ vars.LOCATION }}" \
+            -var="rg_name=${{ vars.RG_NAME }}" \
+            -var="acr_name=${{ secrets.ACR_NAME }}" \
+            -var="acr_rg_name=${{ vars.ACR_RG_NAME }}" \
+            -var="plan_name=${{ vars.PLAN_NAME }}" \
+            -var="plan_sku=${{ vars.PLAN_SKU }}" \
+            -var="webapp_name=${{ vars.WEBAPP_NAME }}" \
+            -var="image_name=${{ env.IMAGE_NAME }}" \
+            -var="image_tag=${{ inputs.image_tag }}" \
+            -var="container_port=${{ vars.CONTAINER_PORT }}"

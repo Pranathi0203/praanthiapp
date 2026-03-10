@@ -8,6 +8,10 @@ variable "acr_rg_name" { type = string }
 variable "plan_name" { type = string }
 variable "plan_sku" { type = string }
 variable "webapp_name" { type = string }
+variable "staging_slot_name" {
+  type    = string
+  default = "staging"
+}
 
 variable "image_name" { type = string }
 variable "image_tag" { type = string }

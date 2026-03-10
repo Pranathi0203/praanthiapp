@@ -29,6 +29,22 @@ locals {
     0,
     60
   )
+  base_app_settings = {
+    "WEBSITES_ENABLE_APP_SERVICE_STORAGE"   = "false"
+    "PORT"                                  = tostring(var.container_port)
+    "ENV"                                   = var.env_name
+    "DB_HOST"                               = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_host.versionless_id})"
+    "DB_NAME"                               = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_name.versionless_id})"
+    "DB_USERNAME"                           = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_username.versionless_id})"
+    "DB_PASSWORD"                           = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_password.versionless_id})"
+    "DATABASE_URL"                          = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_connection_string.versionless_id})"
+    "CONTOSO_DATABASE_URL"                  = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_db_connection_string.versionless_id})"
+    "LITWARE_DATABASE_URL"                  = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_db_connection_string.versionless_id})"
+    "APIM_LOGIN_PATH"                       = "/auth/login"
+    "APIM_SIGNUP_PATH"                      = "/auth/signup"
+    "APPLICATIONINSIGHTS_CONNECTION_STRING" = azurerm_application_insights.app.connection_string
+    "APPINSIGHTS_INSTRUMENTATIONKEY"        = azurerm_application_insights.app.instrumentation_key
+  }
 }
 
 data "azurerm_resource_group" "rg" {
@@ -85,28 +101,41 @@ resource "azurerm_linux_web_app" "app" {
     }
   }
 
-  app_settings = merge({
-    "WEBSITES_ENABLE_APP_SERVICE_STORAGE"   = "false"
-    "PORT"                                  = tostring(var.container_port)
-    "ENV"                                   = var.env_name
-    "DB_HOST"                               = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_host.versionless_id})"
-    "DB_NAME"                               = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_name.versionless_id})"
-    "DB_USERNAME"                           = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_username.versionless_id})"
-    "DB_PASSWORD"                           = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_password.versionless_id})"
-    "DATABASE_URL"                          = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_connection_string.versionless_id})"
-    "CONTOSO_DATABASE_URL"                  = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_db_connection_string.versionless_id})"
-    "LITWARE_DATABASE_URL"                  = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_db_connection_string.versionless_id})"
-    "APIM_LOGIN_PATH"                       = "/auth/login"
-    "APIM_SIGNUP_PATH"                      = "/auth/signup"
-    "APPLICATIONINSIGHTS_CONNECTION_STRING" = azurerm_application_insights.app.connection_string
-    "APPINSIGHTS_INSTRUMENTATIONKEY"        = azurerm_application_insights.app.instrumentation_key
-  }, var.app_settings)
+  app_settings = merge(local.base_app_settings, var.app_settings)
+}
+
+resource "azurerm_linux_web_app_slot" "staging" {
+  name           = var.staging_slot_name
+  app_service_id = azurerm_linux_web_app.app.id
+
+  identity { type = "SystemAssigned" }
+
+  site_config {
+    always_on = true
+
+    application_stack {
+      docker_registry_url = "https://${data.azurerm_container_registry.acr.login_server}"
+      docker_image_name   = "${var.image_name}:${var.image_tag}"
+    }
+  }
+
+  app_settings = merge(
+    local.base_app_settings,
+    var.app_settings,
+    { "ENV" = "${var.env_name}-staging" }
+  )
 }
 
 resource "azurerm_role_assignment" "acr_pull" {
   scope                = data.azurerm_container_registry.acr.id
   role_definition_name = "AcrPull"
   principal_id         = azurerm_linux_web_app.app.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "acr_pull_staging" {
+  scope                = data.azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_linux_web_app_slot.staging.identity[0].principal_id
 }
 
 resource "azurerm_postgresql_flexible_server" "db" {
@@ -177,6 +206,14 @@ resource "azurerm_key_vault_access_policy" "webapp_identity" {
   key_vault_id = azurerm_key_vault.app.id
   tenant_id    = data.azurerm_client_config.current.tenant_id
   object_id    = azurerm_linux_web_app.app.identity[0].principal_id
+
+  secret_permissions = ["Get", "List"]
+}
+
+resource "azurerm_key_vault_access_policy" "webapp_staging_identity" {
+  key_vault_id = azurerm_key_vault.app.id
+  tenant_id    = data.azurerm_client_config.current.tenant_id
+  object_id    = azurerm_linux_web_app_slot.staging.identity[0].principal_id
 
   secret_permissions = ["Get", "List"]
 }

@@ -41,6 +41,9 @@ module "app" {
 output "webapp_url" {
   value = module.app.webapp_url
 }
+output "staging_slot_url" {
+  value = module.app.staging_slot_url
+}
 output "key_vault_name" {
   value = module.app.key_vault_name
 }
