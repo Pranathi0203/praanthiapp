@@ -29,6 +29,11 @@ locals {
     0,
     60
   )
+  log_analytics_workspace_name = substr(
+    "${substr(local.base_name, 0, 20)}-${var.env_name}-law-${random_integer.suffix.result}",
+    0,
+    63
+  )
   vnet_name       = substr("${var.webapp_name}-${var.env_name}-vnet", 0, 64)
   app_subnet_name = "appsvc-integration"
   app_nsg_name    = substr("${var.webapp_name}-${var.env_name}-app-nsg", 0, 80)
@@ -114,12 +119,20 @@ resource "azurerm_service_plan" "plan" {
   sku_name            = var.plan_sku
 }
 
+resource "azurerm_log_analytics_workspace" "app" {
+  name                = local.log_analytics_workspace_name
+  location            = data.azurerm_resource_group.rg.location
+  resource_group_name = data.azurerm_resource_group.rg.name
+  sku                 = "PerGB2018"
+  retention_in_days   = 30
+}
+
 resource "azurerm_application_insights" "app" {
   name                = local.app_insights_name
   location            = data.azurerm_resource_group.rg.location
   resource_group_name = data.azurerm_resource_group.rg.name
   application_type    = "web"
-  workspace_id        = "/subscriptions/df4637b0-01eb-4650-9feb-73300318eb52/resourceGroups/ai_myappdev0203-dev-appi-6760_05bf5ebf-8990-4306-ae01-9826506ffbb6_managed/providers/Microsoft.OperationalInsights/workspaces/managed-myappdev0203-dev-appi-6760-ws"
+  workspace_id        = azurerm_log_analytics_workspace.app.id
 }
 
 resource "azurerm_linux_web_app" "app" {
