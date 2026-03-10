@@ -7,6 +7,10 @@ on:
         type: choice
         required: true
         options: [dev, qa]
+      image_tag:
+        description: Image tag placeholder for Terraform variable resolution
+        required: false
+        default: destroy-placeholder
 
 permissions:
   id-token: write
@@ -33,10 +37,30 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
       - name: Terraform Init
-        run: terraform init
         working-directory: infra/envs/${{ inputs.environment }}
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE }}" \
+            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
+            -backend-config="key=${{ inputs.environment }}/${{ vars.WEBAPP_NAME }}.tfstate"
 
       - name: Terraform Destroy
-        run: terraform destroy -auto-approve
         working-directory: infra/envs/${{ inputs.environment }}
+        run: |
+          terraform destroy -auto-approve \
+            -var="location=${{ vars.LOCATION }}" \
+            -var="rg_name=${{ vars.RG_NAME }}" \
+            -var="acr_name=${{ secrets.ACR_NAME }}" \
+            -var="acr_rg_name=${{ vars.ACR_RG_NAME }}" \
+            -var="plan_name=${{ vars.PLAN_NAME }}" \
+            -var="plan_sku=${{ vars.PLAN_SKU }}" \
+            -var="webapp_name=${{ vars.WEBAPP_NAME }}" \
+            -var="image_name=myapp" \
+            -var="image_tag=${{ inputs.image_tag }}" \
+            -var="container_port=${{ vars.CONTAINER_PORT }}"
