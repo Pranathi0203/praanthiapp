@@ -86,6 +86,9 @@ locals {
   optional_litware_app_settings = var.litware_device_connection_string != "" ? {
     "LITWARE_DEVICE_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_device_connection_string[0].versionless_id})"
   } : {}
+  optional_app_insights_settings = var.application_insights_connection_string != "" ? {
+    "APPLICATIONINSIGHTS_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.application_insights_connection_string[0].versionless_id})"
+  } : {}
   function_app_settings = merge(
     {
       "AzureWebJobsStorage"      = azurerm_storage_account.function.primary_connection_string
@@ -96,6 +99,9 @@ locals {
       "CONTOSO_DATABASE_URL"     = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_db_connection_string.versionless_id})"
       "LITWARE_DATABASE_URL"     = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_db_connection_string.versionless_id})"
     },
+    var.application_insights_connection_string != "" ? {
+      "APPLICATIONINSIGHTS_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.application_insights_connection_string[0].versionless_id})"
+    } : {},
     var.iothub_eventhub_connection_string != "" ? {
       "IOTHUB_EVENTHUB_CONNECTION" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.iothub_eventhub_connection_string[0].versionless_id})"
     } : {}
@@ -264,6 +270,7 @@ resource "azurerm_linux_web_app" "app" {
     local.base_app_settings,
     local.optional_app_settings,
     local.optional_litware_app_settings,
+    local.optional_app_insights_settings,
     var.app_settings
   )
 }
@@ -308,6 +315,7 @@ resource "azurerm_linux_web_app_slot" "staging" {
     local.base_app_settings,
     local.optional_app_settings,
     local.optional_litware_app_settings,
+    local.optional_app_insights_settings,
     var.app_settings,
     { "ENV" = "${var.env_name}-staging" }
   )
@@ -520,6 +528,14 @@ resource "azurerm_key_vault_secret" "iothub_eventhub_connection_string" {
   count        = var.iothub_eventhub_connection_string != "" ? 1 : 0
   name         = "iothub-eventhub-connection-string"
   value        = var.iothub_eventhub_connection_string
+  key_vault_id = azurerm_key_vault.app.id
+  depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
+}
+
+resource "azurerm_key_vault_secret" "application_insights_connection_string" {
+  count        = var.application_insights_connection_string != "" ? 1 : 0
+  name         = "applicationinsights-connection-string"
+  value        = var.application_insights_connection_string
   key_vault_id = azurerm_key_vault.app.id
   depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
 }

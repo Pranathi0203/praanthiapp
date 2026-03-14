@@ -56,3 +56,8 @@ variable "iothub_eventhub_connection_string" {
   type      = string
   sensitive = true
 }
+
+variable "application_insights_connection_string" {
+  type      = string
+  sensitive = true
+}

@@ -23,6 +23,7 @@ module "app" {
   contoso_device_connection_string = var.contoso_device_connection_string
   litware_device_connection_string = var.litware_device_connection_string
   iothub_eventhub_connection_string = var.iothub_eventhub_connection_string
+  application_insights_connection_string = var.application_insights_connection_string
 }
 
 output "webapp_url" { value = module.app.webapp_url }

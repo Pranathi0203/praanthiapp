@@ -64,6 +64,7 @@ jobs:
       TF_VAR_contoso_device_connection_string: ${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}
       TF_VAR_litware_device_connection_string: ${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}
       TF_VAR_iothub_eventhub_connection_string: ${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}
+      TF_VAR_application_insights_connection_string: ${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}
     steps:
       - uses: actions/checkout@v4
 
@@ -111,7 +112,8 @@ jobs:
             -var="allowed_client_cidr=${{ vars.ALLOWED_CLIENT_CIDR }}" \
             -var="contoso_device_connection_string=${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}" \
             -var="litware_device_connection_string=${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}" \
-            -var="iothub_eventhub_connection_string=${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}"
+            -var="iothub_eventhub_connection_string=${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}" \
+            -var="application_insights_connection_string=${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}"
 
   migrate_dev:
     needs: infra_dev
@@ -231,6 +233,7 @@ jobs:
       TF_VAR_contoso_device_connection_string: ${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}
       TF_VAR_litware_device_connection_string: ${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}
       TF_VAR_iothub_eventhub_connection_string: ${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}
+      TF_VAR_application_insights_connection_string: ${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}
     steps:
       - uses: actions/checkout@v4
 
@@ -278,7 +281,8 @@ jobs:
             -var="allowed_client_cidr=${{ vars.ALLOWED_CLIENT_CIDR }}" \
             -var="contoso_device_connection_string=${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}" \
             -var="litware_device_connection_string=${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}" \
-            -var="iothub_eventhub_connection_string=${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}"
+            -var="iothub_eventhub_connection_string=${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}" \
+            -var="application_insights_connection_string=${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}"
 
   migrate_qa:
     needs: infra_qa
