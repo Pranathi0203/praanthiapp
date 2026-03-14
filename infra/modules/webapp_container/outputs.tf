@@ -30,3 +30,23 @@ output "application_insights_connection_string" {
   value     = azurerm_application_insights.app.connection_string
   sensitive = true
 }
+
+output "redis_hostname" {
+  value = azurerm_redis_cache.app.hostname
+}
+
+output "servicebus_namespace_name" {
+  value = azurerm_servicebus_namespace.app.name
+}
+
+output "attendance_queue_name" {
+  value = azurerm_servicebus_queue.attendance.name
+}
+
+output "iothub_name" {
+  value = azurerm_iothub.app.name
+}
+
+output "function_app_name" {
+  value = azurerm_linux_function_app.attendance.name
+}

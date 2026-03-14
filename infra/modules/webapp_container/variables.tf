@@ -89,3 +89,66 @@ variable "apim_publisher_email" {
   type    = string
   default = "admin@pranathiapp.local"
 }
+
+variable "function_app_name" {
+  type    = string
+  default = ""
+}
+
+variable "servicebus_sku" {
+  type    = string
+  default = "Standard"
+}
+
+variable "redis_capacity" {
+  type    = number
+  default = 0
+}
+
+variable "redis_family" {
+  type    = string
+  default = "C"
+}
+
+variable "redis_sku_name" {
+  type    = string
+  default = "Basic"
+}
+
+variable "iothub_sku_name" {
+  type    = string
+  default = "S1"
+}
+
+variable "iothub_capacity" {
+  type    = number
+  default = 1
+}
+
+variable "function_app_service_plan_sku" {
+  type    = string
+  default = "Y1"
+}
+
+variable "function_python_version" {
+  type    = string
+  default = "3.11"
+}
+
+variable "contoso_device_connection_string" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
+variable "litware_device_connection_string" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
+variable "iothub_eventhub_connection_string" {
+  type      = string
+  default   = ""
+  sensitive = true
+}

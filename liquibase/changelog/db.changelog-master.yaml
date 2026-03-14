@@ -6,3 +6,10 @@ databaseChangeLog:
         - sqlFile:
             path: 001-create-users-table.sql
             relativeToChangelogFile: true
+  - changeSet:
+      id: 002-create-attendance-events-table
+      author: codex
+      changes:
+        - sqlFile:
+            path: 002-create-attendance-events-table.sql
+            relativeToChangelogFile: true

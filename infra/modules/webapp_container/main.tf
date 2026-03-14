@@ -3,6 +3,7 @@ terraform {
   required_providers {
     azurerm = { source = "hashicorp/azurerm", version = "~> 3.110" }
     random  = { source = "hashicorp/random", version = "~> 3.6" }
+    archive = { source = "hashicorp/archive", version = "~> 2.5" }
   }
 }
 
@@ -34,6 +35,37 @@ locals {
     0,
     63
   )
+  redis_name = substr(
+    "${substr(local.base_name, 0, 18)}-${var.env_name}-redis-${random_integer.suffix.result}",
+    0,
+    63
+  )
+  servicebus_namespace_name = substr(
+    "${substr(local.base_name, 0, 18)}-${var.env_name}-sb-${random_integer.suffix.result}",
+    0,
+    50
+  )
+  attendance_queue_name = "attendance-events"
+  iothub_name = substr(
+    "${substr(local.base_name, 0, 18)}-${var.env_name}-iot-${random_integer.suffix.result}",
+    0,
+    50
+  )
+  function_plan_name = substr(
+    "${substr(local.base_name, 0, 18)}-${var.env_name}-func-plan-${random_integer.suffix.result}",
+    0,
+    40
+  )
+  function_app_name = var.function_app_name != "" ? var.function_app_name : substr(
+    "${substr(local.base_name, 0, 18)}-${var.env_name}-func-${random_integer.suffix.result}",
+    0,
+    60
+  )
+  function_storage_account_name = substr(
+    "${substr(local.base_name, 0, 10)}${var.env_name}${random_integer.suffix.result}funcsa",
+    0,
+    24
+  )
   vnet_name       = substr("${var.webapp_name}-${var.env_name}-vnet", 0, 64)
   app_subnet_name = "appsvc-integration"
   app_nsg_name    = substr("${var.webapp_name}-${var.env_name}-app-nsg", 0, 80)
@@ -49,6 +81,9 @@ locals {
     "DATABASE_URL"                          = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_connection_string.versionless_id})"
     "CONTOSO_DATABASE_URL"                  = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_db_connection_string.versionless_id})"
     "LITWARE_DATABASE_URL"                  = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_db_connection_string.versionless_id})"
+    "REDIS_URL"                             = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.redis_url.versionless_id})"
+    "CONTOSO_DEVICE_CONNECTION_STRING"      = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_device_connection_string.versionless_id})"
+    "LITWARE_DEVICE_CONNECTION_STRING"      = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_device_connection_string.versionless_id})"
     "APIM_LOGIN_PATH"                       = "/auth/login"
     "APIM_SIGNUP_PATH"                      = "/auth/signup"
     "APPLICATIONINSIGHTS_CONNECTION_STRING" = azurerm_application_insights.app.connection_string
@@ -75,6 +110,12 @@ resource "random_integer" "suffix" {
 resource "random_password" "db_admin_password" {
   length  = 24
   special = true
+}
+
+data "archive_file" "attendance_functions" {
+  type        = "zip"
+  source_dir  = "${path.module}/../../../functions"
+  output_path = "${path.module}/attendance-functions.zip"
 }
 
 resource "azurerm_virtual_network" "app" {
@@ -133,6 +174,57 @@ resource "azurerm_application_insights" "app" {
   resource_group_name = data.azurerm_resource_group.rg.name
   application_type    = "web"
   workspace_id        = azurerm_log_analytics_workspace.app.id
+}
+
+resource "azurerm_redis_cache" "app" {
+  name                = local.redis_name
+  location            = data.azurerm_resource_group.rg.location
+  resource_group_name = data.azurerm_resource_group.rg.name
+  capacity            = var.redis_capacity
+  family              = var.redis_family
+  sku_name            = var.redis_sku_name
+  minimum_tls_version = "1.2"
+  non_ssl_port_enabled = false
+}
+
+resource "azurerm_servicebus_namespace" "app" {
+  name                = local.servicebus_namespace_name
+  location            = data.azurerm_resource_group.rg.location
+  resource_group_name = data.azurerm_resource_group.rg.name
+  sku                 = var.servicebus_sku
+}
+
+resource "azurerm_servicebus_queue" "attendance" {
+  name         = local.attendance_queue_name
+  namespace_id = azurerm_servicebus_namespace.app.id
+}
+
+resource "azurerm_iothub" "app" {
+  name                = local.iothub_name
+  resource_group_name = data.azurerm_resource_group.rg.name
+  location            = data.azurerm_resource_group.rg.location
+
+  sku {
+    name     = var.iothub_sku_name
+    capacity = var.iothub_capacity
+  }
+}
+
+resource "azurerm_storage_account" "function" {
+  name                     = local.function_storage_account_name
+  resource_group_name      = data.azurerm_resource_group.rg.name
+  location                 = data.azurerm_resource_group.rg.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+  min_tls_version          = "TLS1_2"
+}
+
+resource "azurerm_service_plan" "function" {
+  name                = local.function_plan_name
+  resource_group_name = data.azurerm_resource_group.rg.name
+  location            = data.azurerm_resource_group.rg.location
+  os_type             = "Linux"
+  sku_name            = var.function_app_service_plan_sku
 }
 
 resource "azurerm_linux_web_app" "app" {
@@ -311,6 +403,49 @@ resource "azurerm_key_vault_access_policy" "webapp_staging_identity" {
   secret_permissions = ["Get", "List"]
 }
 
+resource "azurerm_linux_function_app" "attendance" {
+  name                = local.function_app_name
+  resource_group_name = data.azurerm_resource_group.rg.name
+  location            = data.azurerm_resource_group.rg.location
+  service_plan_id     = azurerm_service_plan.function.id
+
+  storage_account_name       = azurerm_storage_account.function.name
+  storage_account_access_key = azurerm_storage_account.function.primary_access_key
+
+  identity { type = "SystemAssigned" }
+
+  functions_extension_version = "~4"
+  https_only                  = true
+  zip_deploy_file             = data.archive_file.attendance_functions.output_path
+
+  site_config {
+    application_stack {
+      python_version = var.function_python_version
+    }
+  }
+
+  app_settings = {
+    "AzureWebJobsStorage"                   = azurerm_storage_account.function.primary_connection_string
+    "FUNCTIONS_WORKER_RUNTIME"              = "python"
+    "WEBSITE_RUN_FROM_PACKAGE"              = "1"
+    "APPLICATIONINSIGHTS_CONNECTION_STRING" = azurerm_application_insights.app.connection_string
+    "APPINSIGHTS_INSTRUMENTATIONKEY"        = azurerm_application_insights.app.instrumentation_key
+    "ATTENDANCE_QUEUE_NAME"                 = azurerm_servicebus_queue.attendance.name
+    "SERVICEBUS_CONNECTION"                 = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.servicebus_connection_string.versionless_id})"
+    "CONTOSO_DATABASE_URL"                  = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_db_connection_string.versionless_id})"
+    "LITWARE_DATABASE_URL"                  = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_db_connection_string.versionless_id})"
+    "IOTHUB_EVENTHUB_CONNECTION"            = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.iothub_eventhub_connection_string.versionless_id})"
+  }
+}
+
+resource "azurerm_key_vault_access_policy" "function_identity" {
+  key_vault_id = azurerm_key_vault.app.id
+  tenant_id    = data.azurerm_client_config.current.tenant_id
+  object_id    = azurerm_linux_function_app.attendance.identity[0].principal_id
+
+  secret_permissions = ["Get", "List"]
+}
+
 resource "azurerm_key_vault_secret" "db_host" {
   name         = "db-host"
   value        = azurerm_postgresql_flexible_server.db.fqdn
@@ -341,21 +476,56 @@ resource "azurerm_key_vault_secret" "db_password" {
 
 resource "azurerm_key_vault_secret" "db_connection_string" {
   name         = "db-connection-string"
-  value        = "postgresql://${azurerm_postgresql_flexible_server.db.administrator_login}:${random_password.db_admin_password.result}@${azurerm_postgresql_flexible_server.db.fqdn}:5432/${azurerm_postgresql_flexible_server_database.app.name}?sslmode=require"
+  value        = "postgresql://${azurerm_postgresql_flexible_server.db.administrator_login}:${urlencode(random_password.db_admin_password.result)}@${azurerm_postgresql_flexible_server.db.fqdn}:5432/${azurerm_postgresql_flexible_server_database.app.name}?sslmode=require"
   key_vault_id = azurerm_key_vault.app.id
   depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
 }
 
 resource "azurerm_key_vault_secret" "contoso_db_connection_string" {
   name         = "contoso-db-connection-string"
-  value        = "postgresql://${azurerm_postgresql_flexible_server.db.administrator_login}:${random_password.db_admin_password.result}@${azurerm_postgresql_flexible_server.db.fqdn}:5432/${azurerm_postgresql_flexible_server_database.contoso.name}?sslmode=require"
+  value        = "postgresql://${azurerm_postgresql_flexible_server.db.administrator_login}:${urlencode(random_password.db_admin_password.result)}@${azurerm_postgresql_flexible_server.db.fqdn}:5432/${azurerm_postgresql_flexible_server_database.contoso.name}?sslmode=require"
   key_vault_id = azurerm_key_vault.app.id
   depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
 }
 
 resource "azurerm_key_vault_secret" "litware_db_connection_string" {
   name         = "litware-db-connection-string"
-  value        = "postgresql://${azurerm_postgresql_flexible_server.db.administrator_login}:${random_password.db_admin_password.result}@${azurerm_postgresql_flexible_server.db.fqdn}:5432/${azurerm_postgresql_flexible_server_database.litware.name}?sslmode=require"
+  value        = "postgresql://${azurerm_postgresql_flexible_server.db.administrator_login}:${urlencode(random_password.db_admin_password.result)}@${azurerm_postgresql_flexible_server.db.fqdn}:5432/${azurerm_postgresql_flexible_server_database.litware.name}?sslmode=require"
+  key_vault_id = azurerm_key_vault.app.id
+  depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
+}
+
+resource "azurerm_key_vault_secret" "redis_url" {
+  name         = "redis-url"
+  value        = "rediss://:${azurerm_redis_cache.app.primary_access_key}@${azurerm_redis_cache.app.hostname}:${azurerm_redis_cache.app.ssl_port}/0"
+  key_vault_id = azurerm_key_vault.app.id
+  depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
+}
+
+resource "azurerm_key_vault_secret" "servicebus_connection_string" {
+  name         = "servicebus-connection-string"
+  value        = azurerm_servicebus_namespace.app.default_primary_connection_string
+  key_vault_id = azurerm_key_vault.app.id
+  depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
+}
+
+resource "azurerm_key_vault_secret" "contoso_device_connection_string" {
+  name         = "contoso-device-connection-string"
+  value        = var.contoso_device_connection_string
+  key_vault_id = azurerm_key_vault.app.id
+  depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
+}
+
+resource "azurerm_key_vault_secret" "litware_device_connection_string" {
+  name         = "litware-device-connection-string"
+  value        = var.litware_device_connection_string
+  key_vault_id = azurerm_key_vault.app.id
+  depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
+}
+
+resource "azurerm_key_vault_secret" "iothub_eventhub_connection_string" {
+  name         = "iothub-eventhub-connection-string"
+  value        = var.iothub_eventhub_connection_string
   key_vault_id = azurerm_key_vault.app.id
   depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
 }

@@ -3,25 +3,79 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Dashboard</title>
+    <title>Attendance Dashboard</title>
     <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body>
-    <main class="container">
-      <h1>Dashboard</h1>
-      <p class="ok">Welcome, <strong>{{ user_email }}</strong></p>
-      <p>Organization: <strong>{{ organization|upper }}</strong></p>
-      <div class="card">
-        <p>You can see employees from your organization only.</p>
-        <p><strong>Employees ({{ employees|length }})</strong></p>
-        <ul>
-          {% for e in employees %}
-          <li>{{ e }}</li>
-          {% endfor %}
-        </ul>
+    <main class="container container-wide">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Attendance Control Center</p>
+          <h1>Welcome, {{ user_email }}</h1>
+          <p>Organization: <strong>{{ organization|upper }}</strong></p>
+        </div>
         <a class="btn secondary" href="/logout">Logout</a>
-      </div>
-      <p><a href="/">Back home</a></p>
+      </section>
+
+      {% if msg %}<p class="ok banner">{{ msg }}</p>{% endif %}
+      {% if error %}<p class="error banner">{{ error }}</p>{% endif %}
+
+      <section class="dashboard-grid">
+        <article class="card">
+          <h2>Punch Time</h2>
+          <p>Attendance actions are sent through IoT Hub, then processed by Azure Functions and Service Bus before they are stored in PostgreSQL.</p>
+          <form method="post" action="/attendance/punch" class="inline-actions">
+            <input type="hidden" name="action" value="punch_in" />
+            <button class="btn" type="submit">Punch In</button>
+          </form>
+          <form method="post" action="/attendance/punch" class="inline-actions">
+            <input type="hidden" name="action" value="punch_out" />
+            <button class="btn danger" type="submit">Punch Out</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <h2>Employees</h2>
+          <p><strong>{{ employees|length }}</strong> users in your organization</p>
+          <ul class="plain-list">
+            {% for e in employees %}
+            <li>{{ e }}</li>
+            {% endfor %}
+          </ul>
+        </article>
+      </section>
+
+      <section class="card">
+        <h2>Your Recent Attendance</h2>
+        {% if attendance_history %}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Action</th>
+                <th>Requested</th>
+                <th>Processed</th>
+                <th>Status</th>
+                <th>Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in attendance_history %}
+              <tr>
+                <td>{{ item.event_type.replace('_', ' ')|title }}</td>
+                <td>{{ item.requested_at }}</td>
+                <td>{{ item.processed_at }}</td>
+                <td>{{ item.status|title }}</td>
+                <td>{{ item.source }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p>No attendance events have been processed yet.</p>
+        {% endif %}
+      </section>
     </main>
   </body>
 </html>

@@ -57,3 +57,18 @@ output "apim_gateway_url" {
 output "application_insights_name" {
   value = module.app.application_insights_name
 }
+output "redis_hostname" {
+  value = module.app.redis_hostname
+}
+output "servicebus_namespace_name" {
+  value = module.app.servicebus_namespace_name
+}
+output "attendance_queue_name" {
+  value = module.app.attendance_queue_name
+}
+output "iothub_name" {
+  value = module.app.iothub_name
+}
+output "function_app_name" {
+  value = module.app.function_app_name
+}

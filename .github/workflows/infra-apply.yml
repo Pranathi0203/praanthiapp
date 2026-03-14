@@ -77,4 +77,7 @@ jobs:
             -var="image_name=${{ env.IMAGE_NAME }}" \
             -var="image_tag=${{ inputs.image_tag }}" \
             -var="container_port=${{ vars.CONTAINER_PORT }}" \
-            -var="allowed_client_cidr=${{ inputs.allowed_client_cidr }}"
+            -var="allowed_client_cidr=${{ inputs.allowed_client_cidr }}" \
+            -var="contoso_device_connection_string=${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}" \
+            -var="litware_device_connection_string=${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}" \
+            -var="iothub_eventhub_connection_string=${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}"

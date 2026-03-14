@@ -9,9 +9,14 @@
   <body>
     <main class="container">
       <h1>Pranathi App</h1>
-      <p>Simple authentication demo with FastAPI + Azure PostgreSQL.</p>
+      <p>Tenant-aware attendance system built with FastAPI, PostgreSQL, IoT Hub, Azure Functions, Service Bus, and Redis.</p>
+      {% if session_user %}
+      <a class="btn" href="/dashboard">Go to dashboard</a>
+      <a class="btn secondary" href="/logout">Logout</a>
+      {% else %}
       <a class="btn" href="/signup">Create account</a>
       <a class="btn secondary" href="/login">Login</a>
+      {% endif %}
     </main>
   </body>
 </html>

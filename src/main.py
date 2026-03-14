@@ -1,17 +1,31 @@
 import hashlib
+import json
 import logging
 import os
+import uuid
+from datetime import datetime, timezone
 from urllib.parse import urlparse, urlunparse
 
 import psycopg
 from azure.monitor.opentelemetry import configure_azure_monitor
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from opentelemetry import trace
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from opentelemetry import trace
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.trace.status import Status, StatusCode
+from starlette.middleware.sessions import SessionMiddleware
+
+try:
+    import redis
+except ImportError:  # pragma: no cover - optional until infrastructure is configured
+    redis = None
+
+try:
+    from azure.iot.device import IoTHubDeviceClient
+except ImportError:  # pragma: no cover - optional until infrastructure is configured
+    IoTHubDeviceClient = None
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -23,11 +37,24 @@ CONTOSO_DB_NAME = os.getenv("CONTOSO_DB_NAME", "contoso_db")
 LITWARE_DB_NAME = os.getenv("LITWARE_DB_NAME", "litware_db")
 CONTOSO_DATABASE_URL = os.getenv("CONTOSO_DATABASE_URL", "")
 LITWARE_DATABASE_URL = os.getenv("LITWARE_DATABASE_URL", "")
+REDIS_URL = os.getenv("REDIS_URL", "")
+TENANT_CONNECTION_CACHE_TTL_SECONDS = int(os.getenv("TENANT_CONNECTION_CACHE_TTL_SECONDS", "3600"))
+CONTOSO_DEVICE_CONNECTION_STRING = os.getenv("CONTOSO_DEVICE_CONNECTION_STRING", "")
+LITWARE_DEVICE_CONNECTION_STRING = os.getenv("LITWARE_DEVICE_CONNECTION_STRING", "")
 
 app = FastAPI(title="Pranathi App")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=APP_SECRET,
+    same_site="lax",
+    https_only=False,
+)
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 logger = logging.getLogger(__name__)
+
+_redis_client = None
+_tenant_iot_clients = {}
 
 
 def setup_telemetry():
@@ -90,7 +117,71 @@ def hash_password(password: str) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def ensure_users_table(db_url: str):
+def get_redis_client():
+    global _redis_client
+
+    if _redis_client is not None:
+        return _redis_client
+
+    if not REDIS_URL or redis is None:
+        return None
+
+    _redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+    return _redis_client
+
+
+def get_device_connection_string_for_org(org: str) -> str:
+    cache_key = f"tenant:{org}:iot:device-connection-string"
+    cached_value = None
+    redis_client = get_redis_client()
+
+    if redis_client is not None:
+        try:
+            cached_value = redis_client.get(cache_key)
+        except Exception as exc:
+            logger.warning("Redis lookup failed for %s: %s", org, exc)
+
+    if cached_value:
+        return cached_value
+
+    connection_string = ""
+    if org == "contoso":
+        connection_string = CONTOSO_DEVICE_CONNECTION_STRING
+    elif org == "litware":
+        connection_string = LITWARE_DEVICE_CONNECTION_STRING
+
+    if not connection_string:
+        raise RuntimeError(f"IoT device connection string is not configured for org: {org}")
+
+    if redis_client is not None:
+        try:
+            redis_client.setex(cache_key, TENANT_CONNECTION_CACHE_TTL_SECONDS, connection_string)
+        except Exception as exc:
+            logger.warning("Redis cache write failed for %s: %s", org, exc)
+
+    return connection_string
+
+
+def get_iot_client_for_org(org: str):
+    if org in _tenant_iot_clients:
+        return _tenant_iot_clients[org]
+
+    if IoTHubDeviceClient is None:
+        raise RuntimeError("azure-iot-device dependency is not installed")
+
+    connection_string = get_device_connection_string_for_org(org)
+    client = IoTHubDeviceClient.create_from_connection_string(connection_string)
+    client.connect()
+    _tenant_iot_clients[org] = client
+    return client
+
+
+def publish_attendance_event(org: str, payload: dict):
+    client = get_iot_client_for_org(org)
+    client.send_message(json.dumps(payload))
+
+
+def ensure_schema(db_url: str):
     with get_conn(db_url) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -103,12 +194,87 @@ def ensure_users_table(db_url: str):
                 )
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS attendance_events (
+                    event_id UUID PRIMARY KEY,
+                    user_email VARCHAR(320) NOT NULL,
+                    organization VARCHAR(50) NOT NULL,
+                    event_type VARCHAR(20) NOT NULL,
+                    status VARCHAR(20) NOT NULL DEFAULT 'processed',
+                    source VARCHAR(50) NOT NULL DEFAULT 'iot-pipeline',
+                    requested_at TIMESTAMPTZ NOT NULL,
+                    processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+                )
+                """
+            )
         conn.commit()
+
+
+def require_user_session(request: Request):
+    session_user = request.session.get("user")
+    if not session_user:
+        return None
+    if not session_user.get("email") or not session_user.get("organization"):
+        return None
+    return session_user
+
+
+def load_dashboard_context(request: Request, msg: str = "", error: str = ""):
+    session_user = require_user_session(request)
+    if not session_user:
+        return RedirectResponse("/login?msg=Please+log+in+to+continue", status_code=303)
+
+    try:
+        db_url = get_db_url_for_org(session_user["organization"])
+        ensure_schema(db_url)
+        with get_conn(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT email FROM app_users ORDER BY created_at DESC LIMIT 200")
+                employees = [r[0] for r in cur.fetchall()]
+                cur.execute(
+                    """
+                    SELECT event_type, requested_at, processed_at, status, source
+                    FROM attendance_events
+                    WHERE user_email = %s
+                    ORDER BY requested_at DESC
+                    LIMIT 20
+                    """,
+                    (session_user["email"],),
+                )
+                attendance_history = [
+                    {
+                        "event_type": row[0],
+                        "requested_at": row[1],
+                        "processed_at": row[2],
+                        "status": row[3],
+                        "source": row[4],
+                    }
+                    for row in cur.fetchall()
+                ]
+    except Exception as exc:
+        record_exception_to_telemetry(exc)
+        return RedirectResponse("/login?msg=Database+connection+failed", status_code=303)
+
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {
+            "request": request,
+            "user_email": session_user["email"],
+            "organization": session_user["organization"],
+            "employees": employees,
+            "attendance_history": attendance_history,
+            "msg": msg,
+            "error": error,
+        },
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
-    return templates.TemplateResponse("home.html", {"request": request})
+    session_user = require_user_session(request)
+    return templates.TemplateResponse("home.html", {"request": request, "session_user": session_user})
 
 
 @app.get("/health")
@@ -144,7 +310,7 @@ def signup(email: str = Form(...), password: str = Form(...), confirm_password: 
 
     try:
         db_url = get_db_url_for_org(org)
-        ensure_users_table(db_url)
+        ensure_schema(db_url)
         with get_conn(db_url) as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT id FROM app_users WHERE email = %s", (normalized,))
@@ -180,7 +346,7 @@ def login(request: Request, email: str = Form(...), password: str = Form(...)):
 
     try:
         db_url = get_db_url_for_org(org)
-        ensure_users_table(db_url)
+        ensure_schema(db_url)
         with get_conn(db_url) as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -190,21 +356,54 @@ def login(request: Request, email: str = Form(...), password: str = Form(...)):
                 row = cur.fetchone()
                 if not row:
                     return RedirectResponse("/login?msg=Invalid+email+or+password", status_code=303)
-
-                cur.execute(
-                    "SELECT email FROM app_users ORDER BY created_at DESC LIMIT 200"
-                )
-                employees = [r[0] for r in cur.fetchall()]
     except Exception as exc:
         record_exception_to_telemetry(exc)
         return RedirectResponse("/login?msg=Database+connection+failed", status_code=303)
 
-    return templates.TemplateResponse(
-        "dashboard.html",
-        {"request": request, "user_email": normalized, "organization": org, "employees": employees},
+    request.session["user"] = {"email": normalized, "organization": org}
+    return RedirectResponse("/dashboard?msg=Welcome+back", status_code=303)
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(request: Request, msg: str = "", error: str = ""):
+    return load_dashboard_context(request, msg=msg, error=error)
+
+
+@app.post("/attendance/punch")
+def attendance_punch(request: Request, action: str = Form(...)):
+    session_user = require_user_session(request)
+    if not session_user:
+        return RedirectResponse("/login?msg=Please+log+in+to+continue", status_code=303)
+
+    normalized_action = action.lower().strip()
+    if normalized_action not in {"punch_in", "punch_out"}:
+        return RedirectResponse("/dashboard?error=Invalid+attendance+action", status_code=303)
+
+    payload = {
+        "event_id": str(uuid.uuid4()),
+        "user_email": session_user["email"],
+        "organization": session_user["organization"],
+        "event_type": normalized_action,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "source": "webapp",
+    }
+
+    try:
+        publish_attendance_event(session_user["organization"], payload)
+    except Exception as exc:
+        record_exception_to_telemetry(exc)
+        return RedirectResponse(
+            "/dashboard?error=Attendance+event+could+not+be+queued+to+IoT+Hub",
+            status_code=303,
+        )
+
+    return RedirectResponse(
+        f"/dashboard?msg={normalized_action.replace('_', '+').title()}+queued+through+IoT+Hub",
+        status_code=303,
     )
 
 
 @app.get("/logout")
-def logout():
+def logout(request: Request):
+    request.session.clear()
     return RedirectResponse("/", status_code=303)
