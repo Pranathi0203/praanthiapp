@@ -72,6 +72,38 @@ jobs:
             -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
             -backend-config="key=${{ inputs.environment }}/${{ vars.WEBAPP_NAME }}.tfstate"
 
+      - name: Import existing Key Vault secrets if needed
+        if: ${{ inputs.environment == 'dev' }}
+        working-directory: infra/envs/${{ inputs.environment }}
+        run: |
+          KV_NAME="$(terraform output -raw key_vault_name)"
+
+          import_secret_if_needed() {
+            local address="$1"
+            local secret_name="$2"
+
+            if terraform state show "$address" >/dev/null 2>&1; then
+              echo "$address is already tracked in Terraform state."
+              return 0
+            fi
+
+            local secret_id
+            secret_id="$(az keyvault secret show --vault-name "$KV_NAME" --name "$secret_name" --query id -o tsv 2>/dev/null || true)"
+
+            if [ -z "$secret_id" ]; then
+              echo "Secret $secret_name not found in Key Vault. Skipping import."
+              return 0
+            fi
+
+            echo "Importing $secret_name into Terraform state."
+            terraform import -lock-timeout=5m "$address" "$secret_id"
+          }
+
+          import_secret_if_needed 'module.app.azurerm_key_vault_secret.contoso_device_connection_string[0]' 'contoso-device-connection-string'
+          import_secret_if_needed 'module.app.azurerm_key_vault_secret.litware_device_connection_string[0]' 'litware-device-connection-string'
+          import_secret_if_needed 'module.app.azurerm_key_vault_secret.iothub_eventhub_connection_string[0]' 'iothub-eventhub-connection-string'
+          import_secret_if_needed 'module.app.azurerm_key_vault_secret.application_insights_connection_string[0]' 'applicationinsights-connection-string'
+
       - name: Terraform apply
         working-directory: infra/envs/${{ inputs.environment }}
         run: |
