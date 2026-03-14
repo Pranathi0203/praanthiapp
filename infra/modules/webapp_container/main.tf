@@ -77,11 +77,29 @@ locals {
     "CONTOSO_DATABASE_URL"                  = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_db_connection_string.versionless_id})"
     "LITWARE_DATABASE_URL"                  = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_db_connection_string.versionless_id})"
     "REDIS_URL"                             = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.redis_url.versionless_id})"
-    "CONTOSO_DEVICE_CONNECTION_STRING"      = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_device_connection_string.versionless_id})"
-    "LITWARE_DEVICE_CONNECTION_STRING"      = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_device_connection_string.versionless_id})"
     "APIM_LOGIN_PATH"                       = "/auth/login"
     "APIM_SIGNUP_PATH"                      = "/auth/signup"
   }
+  optional_app_settings = var.contoso_device_connection_string != "" ? {
+    "CONTOSO_DEVICE_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_device_connection_string[0].versionless_id})"
+  } : {}
+  optional_litware_app_settings = var.litware_device_connection_string != "" ? {
+    "LITWARE_DEVICE_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_device_connection_string[0].versionless_id})"
+  } : {}
+  function_app_settings = merge(
+    {
+      "AzureWebJobsStorage"      = azurerm_storage_account.function.primary_connection_string
+      "FUNCTIONS_WORKER_RUNTIME" = "python"
+      "WEBSITE_RUN_FROM_PACKAGE" = "1"
+      "ATTENDANCE_QUEUE_NAME"    = azurerm_servicebus_queue.attendance.name
+      "SERVICEBUS_CONNECTION"    = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.servicebus_connection_string.versionless_id})"
+      "CONTOSO_DATABASE_URL"     = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_db_connection_string.versionless_id})"
+      "LITWARE_DATABASE_URL"     = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_db_connection_string.versionless_id})"
+    },
+    var.iothub_eventhub_connection_string != "" ? {
+      "IOTHUB_EVENTHUB_CONNECTION" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.iothub_eventhub_connection_string[0].versionless_id})"
+    } : {}
+  )
 }
 
 data "azurerm_resource_group" "rg" {
@@ -242,7 +260,12 @@ resource "azurerm_linux_web_app" "app" {
     }
   }
 
-  app_settings = merge(local.base_app_settings, var.app_settings)
+  app_settings = merge(
+    local.base_app_settings,
+    local.optional_app_settings,
+    local.optional_litware_app_settings,
+    var.app_settings
+  )
 }
 
 resource "azurerm_linux_web_app_slot" "staging" {
@@ -283,6 +306,8 @@ resource "azurerm_linux_web_app_slot" "staging" {
 
   app_settings = merge(
     local.base_app_settings,
+    local.optional_app_settings,
+    local.optional_litware_app_settings,
     var.app_settings,
     { "ENV" = "${var.env_name}-staging" }
   )
@@ -401,16 +426,7 @@ resource "azurerm_linux_function_app" "attendance" {
     }
   }
 
-  app_settings = {
-    "AzureWebJobsStorage"                   = azurerm_storage_account.function.primary_connection_string
-    "FUNCTIONS_WORKER_RUNTIME"              = "python"
-    "WEBSITE_RUN_FROM_PACKAGE"              = "1"
-    "ATTENDANCE_QUEUE_NAME"                 = azurerm_servicebus_queue.attendance.name
-    "SERVICEBUS_CONNECTION"                 = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.servicebus_connection_string.versionless_id})"
-    "CONTOSO_DATABASE_URL"                  = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_db_connection_string.versionless_id})"
-    "LITWARE_DATABASE_URL"                  = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_db_connection_string.versionless_id})"
-    "IOTHUB_EVENTHUB_CONNECTION"            = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.iothub_eventhub_connection_string.versionless_id})"
-  }
+  app_settings = local.function_app_settings
 }
 
 resource "azurerm_key_vault_access_policy" "function_identity" {
@@ -485,6 +501,7 @@ resource "azurerm_key_vault_secret" "servicebus_connection_string" {
 }
 
 resource "azurerm_key_vault_secret" "contoso_device_connection_string" {
+  count        = var.contoso_device_connection_string != "" ? 1 : 0
   name         = "contoso-device-connection-string"
   value        = var.contoso_device_connection_string
   key_vault_id = azurerm_key_vault.app.id
@@ -492,6 +509,7 @@ resource "azurerm_key_vault_secret" "contoso_device_connection_string" {
 }
 
 resource "azurerm_key_vault_secret" "litware_device_connection_string" {
+  count        = var.litware_device_connection_string != "" ? 1 : 0
   name         = "litware-device-connection-string"
   value        = var.litware_device_connection_string
   key_vault_id = azurerm_key_vault.app.id
@@ -499,6 +517,7 @@ resource "azurerm_key_vault_secret" "litware_device_connection_string" {
 }
 
 resource "azurerm_key_vault_secret" "iothub_eventhub_connection_string" {
+  count        = var.iothub_eventhub_connection_string != "" ? 1 : 0
   name         = "iothub-eventhub-connection-string"
   value        = var.iothub_eventhub_connection_string
   key_vault_id = azurerm_key_vault.app.id
