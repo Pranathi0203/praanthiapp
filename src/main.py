@@ -41,13 +41,14 @@ REDIS_URL = os.getenv("REDIS_URL", "")
 TENANT_CONNECTION_CACHE_TTL_SECONDS = int(os.getenv("TENANT_CONNECTION_CACHE_TTL_SECONDS", "3600"))
 CONTOSO_DEVICE_CONNECTION_STRING = os.getenv("CONTOSO_DEVICE_CONNECTION_STRING", "")
 LITWARE_DEVICE_CONNECTION_STRING = os.getenv("LITWARE_DEVICE_CONNECTION_STRING", "")
+SESSION_HTTPS_ONLY = os.getenv("SESSION_HTTPS_ONLY", "true").lower() == "true"
 
 app = FastAPI(title="Pranathi App")
 app.add_middleware(
     SessionMiddleware,
     secret_key=APP_SECRET,
     same_site="lax",
-    https_only=False,
+    https_only=SESSION_HTTPS_ONLY,
 )
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")

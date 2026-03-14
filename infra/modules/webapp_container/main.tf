@@ -115,7 +115,7 @@ resource "random_password" "db_admin_password" {
 data "archive_file" "attendance_functions" {
   type        = "zip"
   source_dir  = "${path.module}/../../../functions"
-  output_path = "${path.module}/attendance-functions.zip"
+  output_path = "/tmp/attendance-functions-${var.env_name}.zip"
 }
 
 resource "azurerm_virtual_network" "app" {
