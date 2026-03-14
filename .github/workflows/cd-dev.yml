@@ -1,9 +1,7 @@
 name: CD - Deploy DEV App (staging only)
 
 on:
-  workflow_run:
-    workflows: ["CI - Build & Push"]
-    types: [completed]
+  workflow_dispatch:
 
 permissions:
   id-token: write
@@ -16,7 +14,6 @@ concurrency:
 
 jobs:
   deploy_dev:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     environment: dev
 
@@ -27,12 +24,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Download image tag artifact from CI
-        uses: actions/download-artifact@v4
+        uses: dawidd6/action-download-artifact@v3
         with:
+          workflow: ci-build.yml
           name: image-metadata
           path: .
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Read image tag
         id: meta

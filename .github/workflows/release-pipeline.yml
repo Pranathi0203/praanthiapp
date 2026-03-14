@@ -1,0 +1,376 @@
+name: Release Pipeline
+
+on:
+  workflow_run:
+    workflows: ["CI - Build & Push"]
+    types: [completed]
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+
+concurrency:
+  group: release-pipeline-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: myapp
+
+jobs:
+  prepare:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download image tag artifact from CI
+        uses: actions/download-artifact@v4
+        with:
+          name: image-metadata
+          path: .
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read image tag
+        id: meta
+        run: |
+          TAG="$(cut -d: -f2 image.txt)"
+          echo "image_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Using tag=$TAG"
+
+  infra_dev:
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_location: ${{ vars.LOCATION }}
+      TF_VAR_rg_name: ${{ vars.RG_NAME }}
+      TF_VAR_acr_name: ${{ secrets.ACR_NAME }}
+      TF_VAR_acr_rg_name: ${{ vars.ACR_RG_NAME }}
+      TF_VAR_plan_name: ${{ vars.PLAN_NAME }}
+      TF_VAR_plan_sku: ${{ vars.PLAN_SKU }}
+      TF_VAR_webapp_name: ${{ vars.WEBAPP_NAME }}
+      TF_VAR_image_name: myapp
+      TF_VAR_image_tag: ${{ needs.prepare.outputs.image_tag }}
+      TF_VAR_container_port: ${{ vars.CONTAINER_PORT }}
+      TF_VAR_allowed_client_cidr: ${{ vars.ALLOWED_CLIENT_CIDR }}
+      TF_VAR_contoso_device_connection_string: ${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}
+      TF_VAR_litware_device_connection_string: ${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}
+      TF_VAR_iothub_eventhub_connection_string: ${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate environment CIDR
+        run: |
+          if [ -z "${{ vars.ALLOWED_CLIENT_CIDR }}" ]; then
+            echo "ALLOWED_CLIENT_CIDR variable is required for the dev environment."
+            exit 1
+          fi
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      - name: Terraform init
+        working-directory: infra/envs/dev
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE }}" \
+            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
+            -backend-config="key=dev/${{ vars.WEBAPP_NAME }}.tfstate"
+
+      - name: Terraform apply
+        working-directory: infra/envs/dev
+        run: |
+          terraform apply -auto-approve -lock-timeout=5m \
+            -var="location=${{ vars.LOCATION }}" \
+            -var="rg_name=${{ vars.RG_NAME }}" \
+            -var="acr_name=${{ secrets.ACR_NAME }}" \
+            -var="acr_rg_name=${{ vars.ACR_RG_NAME }}" \
+            -var="plan_name=${{ vars.PLAN_NAME }}" \
+            -var="plan_sku=${{ vars.PLAN_SKU }}" \
+            -var="webapp_name=${{ vars.WEBAPP_NAME }}" \
+            -var="image_name=${{ env.IMAGE_NAME }}" \
+            -var="image_tag=${{ needs.prepare.outputs.image_tag }}" \
+            -var="container_port=${{ vars.CONTAINER_PORT }}" \
+            -var="allowed_client_cidr=${{ vars.ALLOWED_CLIENT_CIDR }}" \
+            -var="contoso_device_connection_string=${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}" \
+            -var="litware_device_connection_string=${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}" \
+            -var="iothub_eventhub_connection_string=${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}"
+
+  migrate_dev:
+    needs: infra_dev
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      - name: Terraform init
+        working-directory: infra/envs/dev
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE }}" \
+            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
+            -backend-config="key=dev/${{ vars.WEBAPP_NAME }}.tfstate"
+
+      - name: Load DB secrets from Key Vault
+        working-directory: infra/envs/dev
+        run: |
+          KV_NAME="$(terraform output -raw key_vault_name)"
+          echo "KV_NAME=$KV_NAME" >> "$GITHUB_ENV"
+          DB_HOST="$(az keyvault secret show --vault-name "$KV_NAME" --name db-host --query value -o tsv)"
+          DB_NAME="$(az keyvault secret show --vault-name "$KV_NAME" --name db-name --query value -o tsv)"
+          DB_USER="$(az keyvault secret show --vault-name "$KV_NAME" --name db-username --query value -o tsv)"
+          DB_PASSWORD="$(az keyvault secret show --vault-name "$KV_NAME" --name db-password --query value -o tsv)"
+          echo "DB_HOST=$DB_HOST" >> "$GITHUB_ENV"
+          echo "DB_NAME=$DB_NAME" >> "$GITHUB_ENV"
+          echo "DB_USER=$DB_USER" >> "$GITHUB_ENV"
+          echo "DB_PASSWORD=$DB_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Run Liquibase update
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}/liquibase/changelog:/liquibase/changelog:ro" \
+            liquibase/liquibase:4.30 \
+            --search-path=/liquibase/changelog \
+            --changelog-file=db.changelog-master.yaml \
+            --url="jdbc:postgresql://${DB_HOST}:5432/${DB_NAME}?sslmode=require" \
+            --username="${DB_USER}" \
+            --password="${DB_PASSWORD}" \
+            update
+
+  deploy_dev:
+    needs: [prepare, migrate_dev]
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+
+      - name: Validate staging slot exists
+        run: |
+          az webapp show \
+            --resource-group "${{ vars.RG_NAME }}" \
+            --name "${{ vars.WEBAPP_NAME }}" \
+            --slot staging >/dev/null
+
+      - name: Deploy container to staging slot
+        run: |
+          LOGIN_SERVER="$(az acr show -n "${{ secrets.ACR_NAME }}" --query loginServer -o tsv)"
+          IMAGE_REF="$LOGIN_SERVER/${IMAGE_NAME}:${{ needs.prepare.outputs.image_tag }}"
+
+          az webapp config container set \
+            --resource-group "${{ vars.RG_NAME }}" \
+            --name "${{ vars.WEBAPP_NAME }}" \
+            --slot staging \
+            --container-image-name "$IMAGE_REF"
+
+          az webapp restart \
+            --resource-group "${{ vars.RG_NAME }}" \
+            --name "${{ vars.WEBAPP_NAME }}" \
+            --slot staging
+
+  infra_qa:
+    needs: [prepare, deploy_dev]
+    runs-on: ubuntu-latest
+    environment: qa
+    env:
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_location: ${{ vars.LOCATION }}
+      TF_VAR_rg_name: ${{ vars.RG_NAME }}
+      TF_VAR_acr_name: ${{ secrets.ACR_NAME }}
+      TF_VAR_acr_rg_name: ${{ vars.ACR_RG_NAME }}
+      TF_VAR_plan_name: ${{ vars.PLAN_NAME }}
+      TF_VAR_plan_sku: ${{ vars.PLAN_SKU }}
+      TF_VAR_webapp_name: ${{ vars.WEBAPP_NAME }}
+      TF_VAR_image_name: myapp
+      TF_VAR_image_tag: ${{ needs.prepare.outputs.image_tag }}
+      TF_VAR_container_port: ${{ vars.CONTAINER_PORT }}
+      TF_VAR_allowed_client_cidr: ${{ vars.ALLOWED_CLIENT_CIDR }}
+      TF_VAR_contoso_device_connection_string: ${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}
+      TF_VAR_litware_device_connection_string: ${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}
+      TF_VAR_iothub_eventhub_connection_string: ${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate environment CIDR
+        run: |
+          if [ -z "${{ vars.ALLOWED_CLIENT_CIDR }}" ]; then
+            echo "ALLOWED_CLIENT_CIDR variable is required for the qa environment."
+            exit 1
+          fi
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      - name: Terraform init
+        working-directory: infra/envs/qa
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE }}" \
+            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
+            -backend-config="key=qa/${{ vars.WEBAPP_NAME }}.tfstate"
+
+      - name: Terraform apply
+        working-directory: infra/envs/qa
+        run: |
+          terraform apply -auto-approve -lock-timeout=5m \
+            -var="location=${{ vars.LOCATION }}" \
+            -var="rg_name=${{ vars.RG_NAME }}" \
+            -var="acr_name=${{ secrets.ACR_NAME }}" \
+            -var="acr_rg_name=${{ vars.ACR_RG_NAME }}" \
+            -var="plan_name=${{ vars.PLAN_NAME }}" \
+            -var="plan_sku=${{ vars.PLAN_SKU }}" \
+            -var="webapp_name=${{ vars.WEBAPP_NAME }}" \
+            -var="image_name=${{ env.IMAGE_NAME }}" \
+            -var="image_tag=${{ needs.prepare.outputs.image_tag }}" \
+            -var="container_port=${{ vars.CONTAINER_PORT }}" \
+            -var="allowed_client_cidr=${{ vars.ALLOWED_CLIENT_CIDR }}" \
+            -var="contoso_device_connection_string=${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}" \
+            -var="litware_device_connection_string=${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}" \
+            -var="iothub_eventhub_connection_string=${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}"
+
+  migrate_qa:
+    needs: infra_qa
+    runs-on: ubuntu-latest
+    environment: qa
+    env:
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      - name: Terraform init
+        working-directory: infra/envs/qa
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE }}" \
+            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
+            -backend-config="key=qa/${{ vars.WEBAPP_NAME }}.tfstate"
+
+      - name: Load DB secrets from Key Vault
+        working-directory: infra/envs/qa
+        run: |
+          KV_NAME="$(terraform output -raw key_vault_name)"
+          echo "KV_NAME=$KV_NAME" >> "$GITHUB_ENV"
+          DB_HOST="$(az keyvault secret show --vault-name "$KV_NAME" --name db-host --query value -o tsv)"
+          DB_NAME="$(az keyvault secret show --vault-name "$KV_NAME" --name db-name --query value -o tsv)"
+          DB_USER="$(az keyvault secret show --vault-name "$KV_NAME" --name db-username --query value -o tsv)"
+          DB_PASSWORD="$(az keyvault secret show --vault-name "$KV_NAME" --name db-password --query value -o tsv)"
+          echo "DB_HOST=$DB_HOST" >> "$GITHUB_ENV"
+          echo "DB_NAME=$DB_NAME" >> "$GITHUB_ENV"
+          echo "DB_USER=$DB_USER" >> "$GITHUB_ENV"
+          echo "DB_PASSWORD=$DB_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Run Liquibase update
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}/liquibase/changelog:/liquibase/changelog:ro" \
+            liquibase/liquibase:4.30 \
+            --search-path=/liquibase/changelog \
+            --changelog-file=db.changelog-master.yaml \
+            --url="jdbc:postgresql://${DB_HOST}:5432/${DB_NAME}?sslmode=require" \
+            --username="${DB_USER}" \
+            --password="${DB_PASSWORD}" \
+            update
+
+  deploy_qa:
+    needs: [prepare, migrate_qa]
+    runs-on: ubuntu-latest
+    environment: qa
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+
+      - name: Validate staging slot exists
+        run: |
+          az webapp show \
+            --resource-group "${{ vars.RG_NAME }}" \
+            --name "${{ vars.WEBAPP_NAME }}" \
+            --slot staging >/dev/null
+
+      - name: Deploy container to staging slot
+        run: |
+          LOGIN_SERVER="$(az acr show -n "${{ secrets.ACR_NAME }}" --query loginServer -o tsv)"
+          IMAGE_REF="$LOGIN_SERVER/${IMAGE_NAME}:${{ needs.prepare.outputs.image_tag }}"
+
+          az webapp config container set \
+            --resource-group "${{ vars.RG_NAME }}" \
+            --name "${{ vars.WEBAPP_NAME }}" \
+            --slot staging \
+            --container-image-name "$IMAGE_REF"
+
+          az webapp restart \
+            --resource-group "${{ vars.RG_NAME }}" \
+            --name "${{ vars.WEBAPP_NAME }}" \
+            --slot staging
