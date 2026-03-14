@@ -18,6 +18,10 @@ permissions:
   id-token: write
   contents: read
 
+concurrency:
+  group: infra-apply-${{ github.repository }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
 jobs:
   apply:
     runs-on: ubuntu-latest
@@ -70,7 +74,7 @@ jobs:
       - name: Import existing Application Insights if needed
         working-directory: infra/envs/${{ inputs.environment }}
         run: |
-          if terraform state list | grep -q '^module.app.azurerm_application_insights.app$'; then
+          if terraform state list -lock=false | grep -q '^module.app.azurerm_application_insights.app$'; then
             echo "Application Insights is already tracked in Terraform state."
             exit 0
           fi
@@ -87,7 +91,7 @@ jobs:
           fi
 
           echo "Importing existing Application Insights resource into Terraform state: $EXISTING_APP_INSIGHTS_ID"
-          terraform import module.app.azurerm_application_insights.app "$EXISTING_APP_INSIGHTS_ID"
+          terraform import -lock-timeout=5m module.app.azurerm_application_insights.app "$EXISTING_APP_INSIGHTS_ID"
 
       - name: Terraform apply
         working-directory: infra/envs/${{ inputs.environment }}
@@ -102,7 +106,7 @@ jobs:
             exit 1
           fi
 
-          terraform apply -auto-approve \
+          terraform apply -auto-approve -lock-timeout=5m \
             -var="location=${{ vars.LOCATION }}" \
             -var="rg_name=${{ vars.RG_NAME }}" \
             -var="acr_name=${{ secrets.ACR_NAME }}" \
