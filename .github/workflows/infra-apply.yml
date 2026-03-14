@@ -29,6 +29,20 @@ jobs:
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       IMAGE_NAME: myapp
+      TF_VAR_location: ${{ vars.LOCATION }}
+      TF_VAR_rg_name: ${{ vars.RG_NAME }}
+      TF_VAR_acr_name: ${{ secrets.ACR_NAME }}
+      TF_VAR_acr_rg_name: ${{ vars.ACR_RG_NAME }}
+      TF_VAR_plan_name: ${{ vars.PLAN_NAME }}
+      TF_VAR_plan_sku: ${{ vars.PLAN_SKU }}
+      TF_VAR_webapp_name: ${{ vars.WEBAPP_NAME }}
+      TF_VAR_image_name: myapp
+      TF_VAR_image_tag: ${{ inputs.image_tag }}
+      TF_VAR_container_port: ${{ vars.CONTAINER_PORT }}
+      TF_VAR_allowed_client_cidr: ${{ inputs.allowed_client_cidr }}
+      TF_VAR_contoso_device_connection_string: ${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}
+      TF_VAR_litware_device_connection_string: ${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}
+      TF_VAR_iothub_eventhub_connection_string: ${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}
 
     steps:
       - uses: actions/checkout@v4
