@@ -57,9 +57,6 @@ output "postgres_fqdn" {
 output "apim_gateway_url" {
   value = module.app.apim_gateway_url
 }
-output "application_insights_name" {
-  value = module.app.application_insights_name
-}
 output "redis_hostname" {
   value = module.app.redis_hostname
 }

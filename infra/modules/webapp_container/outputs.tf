@@ -22,15 +22,6 @@ output "apim_gateway_url" {
   value = azurerm_api_management.app.gateway_url
 }
 
-output "application_insights_name" {
-  value = azurerm_application_insights.app.name
-}
-
-output "application_insights_connection_string" {
-  value     = azurerm_application_insights.app.connection_string
-  sensitive = true
-}
-
 output "redis_hostname" {
   value = azurerm_redis_cache.app.hostname
 }

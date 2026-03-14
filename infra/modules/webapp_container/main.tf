@@ -30,11 +30,6 @@ locals {
     0,
     60
   )
-  log_analytics_workspace_name = substr(
-    "${substr(local.base_name, 0, 20)}-${var.env_name}-law-${random_integer.suffix.result}",
-    0,
-    63
-  )
   redis_name = substr(
     "${substr(local.base_name, 0, 18)}-${var.env_name}-redis-${random_integer.suffix.result}",
     0,
@@ -86,8 +81,6 @@ locals {
     "LITWARE_DEVICE_CONNECTION_STRING"      = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_device_connection_string.versionless_id})"
     "APIM_LOGIN_PATH"                       = "/auth/login"
     "APIM_SIGNUP_PATH"                      = "/auth/signup"
-    "APPLICATIONINSIGHTS_CONNECTION_STRING" = azurerm_application_insights.app.connection_string
-    "APPINSIGHTS_INSTRUMENTATIONKEY"        = azurerm_application_insights.app.instrumentation_key
   }
 }
 
@@ -158,22 +151,6 @@ resource "azurerm_service_plan" "plan" {
   location            = data.azurerm_resource_group.rg.location
   os_type             = "Linux"
   sku_name            = var.plan_sku
-}
-
-resource "azurerm_log_analytics_workspace" "app" {
-  name                = local.log_analytics_workspace_name
-  location            = data.azurerm_resource_group.rg.location
-  resource_group_name = data.azurerm_resource_group.rg.name
-  sku                 = "PerGB2018"
-  retention_in_days   = 30
-}
-
-resource "azurerm_application_insights" "app" {
-  name                = local.app_insights_name
-  location            = data.azurerm_resource_group.rg.location
-  resource_group_name = data.azurerm_resource_group.rg.name
-  application_type    = "web"
-  workspace_id        = azurerm_log_analytics_workspace.app.id
 }
 
 resource "azurerm_redis_cache" "app" {
@@ -428,8 +405,6 @@ resource "azurerm_linux_function_app" "attendance" {
     "AzureWebJobsStorage"                   = azurerm_storage_account.function.primary_connection_string
     "FUNCTIONS_WORKER_RUNTIME"              = "python"
     "WEBSITE_RUN_FROM_PACKAGE"              = "1"
-    "APPLICATIONINSIGHTS_CONNECTION_STRING" = azurerm_application_insights.app.connection_string
-    "APPINSIGHTS_INSTRUMENTATIONKEY"        = azurerm_application_insights.app.instrumentation_key
     "ATTENDANCE_QUEUE_NAME"                 = azurerm_servicebus_queue.attendance.name
     "SERVICEBUS_CONNECTION"                 = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.servicebus_connection_string.versionless_id})"
     "CONTOSO_DATABASE_URL"                  = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_db_connection_string.versionless_id})"

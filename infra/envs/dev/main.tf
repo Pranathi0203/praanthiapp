@@ -30,7 +30,6 @@ output "staging_slot_url" { value = module.app.staging_slot_url }
 output "key_vault_name" { value = module.app.key_vault_name }
 output "postgres_fqdn" { value = module.app.postgres_fqdn }
 output "apim_gateway_url" { value = module.app.apim_gateway_url }
-output "application_insights_name" { value = module.app.application_insights_name }
 output "redis_hostname" { value = module.app.redis_hostname }
 output "servicebus_namespace_name" { value = module.app.servicebus_namespace_name }
 output "attendance_queue_name" { value = module.app.attendance_queue_name }
