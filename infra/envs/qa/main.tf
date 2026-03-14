@@ -32,6 +32,9 @@ module "app" {
 
   container_port      = var.container_port
   allowed_client_cidr = var.allowed_client_cidr
+  contoso_device_connection_string = var.contoso_device_connection_string
+  litware_device_connection_string = var.litware_device_connection_string
+  iothub_eventhub_connection_string = var.iothub_eventhub_connection_string
 
   # Optional extra settings
   app_settings = {

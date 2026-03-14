@@ -13,3 +13,15 @@ variable "image_tag" { type = string }
 
 variable "container_port" { type = number }
 variable "allowed_client_cidr" { type = string }
+variable "contoso_device_connection_string" {
+  type      = string
+  sensitive = true
+}
+variable "litware_device_connection_string" {
+  type      = string
+  sensitive = true
+}
+variable "iothub_eventhub_connection_string" {
+  type      = string
+  sensitive = true
+}
