@@ -74,7 +74,9 @@ jobs:
       - name: Import existing Application Insights if needed
         working-directory: infra/envs/${{ inputs.environment }}
         run: |
-          if terraform state list -lock=false | grep -q '^module.app.azurerm_application_insights.app$'; then
+          STATE_JSON="$(terraform state pull)"
+
+          if printf '%s' "$STATE_JSON" | grep -q '"type":"azurerm_application_insights"'; then
             echo "Application Insights is already tracked in Terraform state."
             exit 0
           fi
