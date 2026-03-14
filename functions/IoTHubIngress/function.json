@@ -5,7 +5,6 @@
       "name": "event",
       "type": "eventHubTrigger",
       "direction": "in",
-      "eventHubName": "messages/events",
       "connection": "IOTHUB_EVENTHUB_CONNECTION",
       "consumerGroup": "$Default",
       "cardinality": "one"
