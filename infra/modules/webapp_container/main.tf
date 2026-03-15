@@ -94,7 +94,10 @@ locals {
       "AzureWebJobsStorage"      = azurerm_storage_account.function.primary_connection_string
       "FUNCTIONS_WORKER_RUNTIME" = "python"
       "WEBSITE_RUN_FROM_PACKAGE" = "1"
+      "SCM_DO_BUILD_DURING_DEPLOYMENT" = "true"
+      "ENABLE_ORYX_BUILD"              = "true"
       "ATTENDANCE_QUEUE_NAME"    = azurerm_servicebus_queue.attendance.name
+      "IOTHUB_EVENTHUB_NAME"     = azurerm_iothub.app.name
       "SERVICEBUS_CONNECTION"    = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.servicebus_connection_string.versionless_id})"
       "CONTOSO_DATABASE_URL"     = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_db_connection_string.versionless_id})"
       "LITWARE_DATABASE_URL"     = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_db_connection_string.versionless_id})"

@@ -5,9 +5,9 @@
       "name": "event",
       "type": "eventHubTrigger",
       "direction": "in",
+      "eventHubName": "%IOTHUB_EVENTHUB_NAME%",
       "connection": "IOTHUB_EVENTHUB_CONNECTION",
-      "consumerGroup": "$Default",
-      "cardinality": "one"
+      "consumerGroup": "attendance-pipeline"
     }
   ]
 }
