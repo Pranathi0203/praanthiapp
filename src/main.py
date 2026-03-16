@@ -31,6 +31,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 APP_SECRET = os.getenv("APP_SECRET", "change-me")
 APPINSIGHTS_CONNECTION_STRING = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@pranathi.local").lower()
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me-admin")
 CONTOSO_DOMAIN = os.getenv("CONTOSO_DOMAIN", "contoso.com").lower()
 LITWARE_DOMAIN = os.getenv("LITWARE_DOMAIN", "litware.com").lower()
 CONTOSO_DB_NAME = os.getenv("CONTOSO_DB_NAME", "contoso_db")
@@ -107,6 +109,12 @@ def get_db_url_for_org(org: str) -> str:
         if DATABASE_URL:
             return with_database_name(DATABASE_URL, LITWARE_DB_NAME)
     raise RuntimeError(f"Database URL is not configured for org: {org}")
+
+
+def get_admin_db_url() -> str:
+    if DATABASE_URL:
+        return DATABASE_URL
+    raise RuntimeError("Shared admin database URL is not configured")
 
 
 def get_conn(db_url: str):
@@ -213,6 +221,48 @@ def ensure_schema(db_url: str):
         conn.commit()
 
 
+def ensure_admin_schema():
+    with get_conn(get_admin_db_url()) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS auth_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_email VARCHAR(320) NOT NULL,
+                    organization VARCHAR(50) NOT NULL,
+                    actor_type VARCHAR(20) NOT NULL DEFAULT 'employee',
+                    event_type VARCHAR(20) NOT NULL,
+                    event_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+                )
+                """
+            )
+        conn.commit()
+
+
+def record_auth_event(user_email: str, organization: str, event_type: str, actor_type: str = "employee"):
+    try:
+        ensure_admin_schema()
+        with get_conn(get_admin_db_url()) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO auth_events (user_email, organization, actor_type, event_type, metadata)
+                    VALUES (%s, %s, %s, %s, %s::jsonb)
+                    """,
+                    (
+                        user_email,
+                        organization,
+                        actor_type,
+                        event_type,
+                        json.dumps({"source": "webapp"}),
+                    ),
+                )
+            conn.commit()
+    except Exception as exc:
+        logger.warning("Auth event could not be recorded for %s: %s", user_email, exc)
+
+
 def require_user_session(request: Request):
     session_user = request.session.get("user")
     if not session_user:
@@ -220,6 +270,15 @@ def require_user_session(request: Request):
     if not session_user.get("email") or not session_user.get("organization"):
         return None
     return session_user
+
+
+def require_admin_session(request: Request):
+    session_admin = request.session.get("admin")
+    if not session_admin:
+        return None
+    if not session_admin.get("email"):
+        return None
+    return session_admin
 
 
 def load_dashboard_context(request: Request, msg: str = "", error: str = ""):
@@ -272,10 +331,118 @@ def load_dashboard_context(request: Request, msg: str = "", error: str = ""):
     )
 
 
+def load_admin_dashboard_context(request: Request, msg: str = "", error: str = ""):
+    session_admin = require_admin_session(request)
+    if not session_admin:
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    recent_auth_events = []
+    recent_attendance_events = []
+    stats = {"login_count": 0, "logout_count": 0, "attendance_count": 0, "tenant_count": 0}
+
+    try:
+        ensure_admin_schema()
+        with get_conn(get_admin_db_url()) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        COUNT(*) FILTER (WHERE event_type = 'login' AND event_time >= NOW() - INTERVAL '24 hours'),
+                        COUNT(*) FILTER (WHERE event_type = 'logout' AND event_time >= NOW() - INTERVAL '24 hours'),
+                        COUNT(DISTINCT organization) FILTER (WHERE actor_type = 'employee')
+                    FROM auth_events
+                    """
+                )
+                row = cur.fetchone()
+                stats["login_count"] = row[0] or 0
+                stats["logout_count"] = row[1] or 0
+                stats["tenant_count"] = row[2] or 0
+
+                cur.execute(
+                    """
+                    SELECT user_email, organization, actor_type, event_type, event_time
+                    FROM auth_events
+                    ORDER BY event_time DESC
+                    LIMIT 50
+                    """
+                )
+                recent_auth_events = [
+                    {
+                        "user_email": item[0],
+                        "organization": item[1],
+                        "actor_type": item[2],
+                        "event_type": item[3],
+                        "event_time": item[4],
+                    }
+                    for item in cur.fetchall()
+                ]
+    except Exception as exc:
+        record_exception_to_telemetry(exc)
+        return RedirectResponse("/admin/login?msg=Admin+database+connection+failed", status_code=303)
+
+    for org in ("contoso", "litware"):
+        try:
+            db_url = get_db_url_for_org(org)
+            ensure_schema(db_url)
+            with get_conn(db_url) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT user_email, organization, event_type, requested_at, processed_at, status, source
+                        FROM attendance_events
+                        ORDER BY requested_at DESC
+                        LIMIT 25
+                        """
+                    )
+                    recent_attendance_events.extend(
+                        {
+                            "user_email": row[0],
+                            "organization": row[1],
+                            "event_type": row[2],
+                            "requested_at": row[3],
+                            "processed_at": row[4],
+                            "status": row[5],
+                            "source": row[6],
+                        }
+                        for row in cur.fetchall()
+                    )
+
+                    cur.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM attendance_events
+                        WHERE requested_at >= NOW() - INTERVAL '24 hours'
+                        """
+                    )
+                    stats["attendance_count"] += cur.fetchone()[0] or 0
+        except Exception as exc:
+            logger.warning("Admin dashboard could not load attendance for %s: %s", org, exc)
+
+    recent_attendance_events.sort(key=lambda item: item["requested_at"], reverse=True)
+    recent_attendance_events = recent_attendance_events[:50]
+
+    return templates.TemplateResponse(
+        "admin_dashboard.html",
+        {
+            "request": request,
+            "admin_email": session_admin["email"],
+            "recent_auth_events": recent_auth_events,
+            "recent_attendance_events": recent_attendance_events,
+            "stats": stats,
+            "msg": msg,
+            "error": error,
+        },
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     session_user = require_user_session(request)
-    return templates.TemplateResponse("home.html", {"request": request, "session_user": session_user})
+    session_admin = require_admin_session(request)
+    return templates.TemplateResponse(
+        "home.html",
+        {"request": request, "session_user": session_user, "session_admin": session_admin},
+    )
 
 
 @app.get("/health")
@@ -362,12 +529,41 @@ def login(request: Request, email: str = Form(...), password: str = Form(...)):
         return RedirectResponse("/login?msg=Database+connection+failed", status_code=303)
 
     request.session["user"] = {"email": normalized, "organization": org}
+    record_auth_event(normalized, org, "login")
     return RedirectResponse("/dashboard?msg=Welcome+back", status_code=303)
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, msg: str = "", error: str = ""):
     return load_dashboard_context(request, msg=msg, error=error)
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_root(request: Request):
+    if require_admin_session(request):
+        return RedirectResponse("/admin/dashboard", status_code=303)
+    return RedirectResponse("/admin/login", status_code=303)
+
+
+@app.get("/admin/login", response_class=HTMLResponse)
+def admin_login_page(request: Request, msg: str = ""):
+    return templates.TemplateResponse("admin_login.html", {"request": request, "msg": msg})
+
+
+@app.post("/admin/login")
+def admin_login(request: Request, email: str = Form(...), password: str = Form(...)):
+    normalized = email.lower().strip()
+    if normalized != ADMIN_EMAIL or hash_password(password) != hash_password(ADMIN_PASSWORD):
+        return RedirectResponse("/admin/login?msg=Invalid+admin+credentials", status_code=303)
+
+    request.session["admin"] = {"email": normalized}
+    record_auth_event(normalized, "admin", "login", actor_type="admin")
+    return RedirectResponse("/admin/dashboard?msg=Admin+session+started", status_code=303)
+
+
+@app.get("/admin/dashboard", response_class=HTMLResponse)
+def admin_dashboard(request: Request, msg: str = "", error: str = ""):
+    return load_admin_dashboard_context(request, msg=msg, error=error)
 
 
 @app.post("/attendance/punch")
@@ -406,5 +602,11 @@ def attendance_punch(request: Request, action: str = Form(...)):
 
 @app.get("/logout")
 def logout(request: Request):
+    session_user = require_user_session(request)
+    session_admin = require_admin_session(request)
+    if session_user:
+        record_auth_event(session_user["email"], session_user["organization"], "logout")
+    if session_admin:
+        record_auth_event(session_admin["email"], "admin", "logout", actor_type="admin")
     request.session.clear()
     return RedirectResponse("/", status_code=303)

@@ -5,7 +5,9 @@
 body {
   margin: 0;
   font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-  background: linear-gradient(180deg, #f7f9fc 0%, #eef3fb 100%);
+  background:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.95), transparent 28%),
+    linear-gradient(180deg, #f4f7fb 0%, #e8eef8 100%);
   color: #1b2430;
 }
 
@@ -24,11 +26,13 @@ h2 {
 }
 
 .card {
-  background: #fff;
-  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(92, 117, 153, 0.12);
+  border-radius: 18px;
   padding: 1.25rem;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 20px 45px rgba(22, 34, 58, 0.08);
   margin: 1rem 0;
+  backdrop-filter: blur(8px);
 }
 
 label {
@@ -50,20 +54,39 @@ input {
   margin-top: 1rem;
   margin-right: 0.5rem;
   border: 0;
-  border-radius: 8px;
-  padding: 0.6rem 0.95rem;
+  border-radius: 999px;
+  padding: 0.7rem 1.05rem;
   text-decoration: none;
-  background: #0b5fff;
+  background: linear-gradient(135deg, #0b5fff 0%, #0047c2 100%);
   color: #fff;
   cursor: pointer;
+  box-shadow: 0 12px 24px rgba(11, 95, 255, 0.2);
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin-top: 1rem;
+  margin-right: 0.5rem;
+  border-radius: 999px;
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.9);
+  color: #17345c;
+  border: 1px solid rgba(92, 117, 153, 0.2);
+  box-shadow: 0 12px 24px rgba(22, 34, 58, 0.08);
+  font-size: 1.25rem;
+  line-height: 1;
 }
 
 .btn.secondary {
-  background: #3b4354;
+  background: linear-gradient(135deg, #3b4354 0%, #242c3d 100%);
 }
 
 .btn.danger {
-  background: #d63d3d;
+  background: linear-gradient(135deg, #d63d3d 0%, #b72020 100%);
 }
 
 .ok {
@@ -80,7 +103,7 @@ input {
 }
 
 .container-wide {
-  max-width: 1080px;
+  max-width: 1200px;
 }
 
 .hero {
@@ -88,6 +111,22 @@ input {
   justify-content: space-between;
   gap: 1rem;
   align-items: flex-start;
+}
+
+.hero-card {
+  background: linear-gradient(145deg, #10233f 0%, #17345c 100%);
+  color: #f7fbff;
+  border-radius: 24px;
+  padding: 1.5rem;
+  box-shadow: 0 24px 48px rgba(16, 35, 63, 0.2);
+}
+
+.hero-card .eyebrow {
+  color: #b6d1ff;
+}
+
+.hero-card p {
+  color: rgba(247, 251, 255, 0.88);
 }
 
 .eyebrow {
@@ -102,6 +141,10 @@ input {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 1rem;
+}
+
+.admin-grid {
+  align-items: start;
 }
 
 .inline-actions {
@@ -128,11 +171,85 @@ td {
   text-align: left;
   padding: 0.75rem 0.5rem;
   border-bottom: 1px solid #e4e9f2;
+  vertical-align: top;
+}
+
+th {
+  color: #5a6b84;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.admin-hero {
+  background: linear-gradient(145deg, #ffffff 0%, #eef4ff 100%);
+  border: 1px solid rgba(92, 117, 153, 0.14);
+  border-radius: 24px;
+  padding: 1.5rem;
+  box-shadow: 0 24px 48px rgba(22, 34, 58, 0.08);
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.stat-card {
+  background: linear-gradient(180deg, #ffffff 0%, #f4f7fc 100%);
+  border: 1px solid rgba(92, 117, 153, 0.12);
+  border-radius: 20px;
+  padding: 1.1rem 1.2rem;
+  box-shadow: 0 16px 32px rgba(22, 34, 58, 0.06);
+}
+
+.stat-label {
+  display: block;
+  color: #5a6b84;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.stat-value {
+  display: block;
+  margin-top: 0.4rem;
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  background: #e7f0ff;
+  color: #18407f;
+  font-size: 0.85rem;
+  font-weight: 600;
 }
 
 @media (max-width: 640px) {
   .hero {
     flex-direction: column;
+  }
+
+  .hero-actions {
+    justify-content: flex-start;
   }
 
   .inline-actions {

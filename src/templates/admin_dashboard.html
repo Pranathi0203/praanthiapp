@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Admin Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="container container-wide">
+      <section class="hero admin-hero">
+        <div>
+          <p class="eyebrow">Admin App</p>
+          <h1>Operations dashboard</h1>
+          <p>Signed in as <strong>{{ admin_email }}</strong></p>
+        </div>
+        <div class="hero-actions">
+          <a class="icon-btn" href="/admin/dashboard" title="Refresh dashboard" aria-label="Refresh dashboard">
+            &#x21bb;
+          </a>
+          <a class="btn secondary" href="/">Home</a>
+          <a class="btn" href="/logout">Logout</a>
+        </div>
+      </section>
+
+      {% if msg %}<p class="ok banner">{{ msg }}</p>{% endif %}
+      {% if error %}<p class="error banner">{{ error }}</p>{% endif %}
+
+      <section class="stats-grid">
+        <article class="stat-card">
+          <span class="stat-label">Logins / 24h</span>
+          <strong class="stat-value">{{ stats.login_count }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">Logouts / 24h</span>
+          <strong class="stat-value">{{ stats.logout_count }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">Attendance events / 24h</span>
+          <strong class="stat-value">{{ stats.attendance_count }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">Active tenants</span>
+          <strong class="stat-value">{{ stats.tenant_count }}</strong>
+        </article>
+      </section>
+
+      <section class="dashboard-grid admin-grid">
+        <article class="card">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">User access</p>
+              <h2>Recent logins and logouts</h2>
+            </div>
+          </div>
+
+          {% if recent_auth_events %}
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Role</th>
+                  <th>Organization</th>
+                  <th>Event</th>
+                  <th>Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for item in recent_auth_events %}
+                <tr>
+                  <td>{{ item.user_email }}</td>
+                  <td><span class="chip">{{ item.actor_type|title }}</span></td>
+                  <td>{{ item.organization|upper }}</td>
+                  <td>{{ item.event_type|title }}</td>
+                  <td>{{ item.event_time }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <p>No login or logout activity has been recorded yet.</p>
+          {% endif %}
+        </article>
+
+        <article class="card">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Attendance feed</p>
+              <h2>Recent punch activity</h2>
+            </div>
+          </div>
+
+          {% if recent_attendance_events %}
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Organization</th>
+                  <th>Action</th>
+                  <th>Requested</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for item in recent_attendance_events %}
+                <tr>
+                  <td>{{ item.user_email }}</td>
+                  <td>{{ item.organization|upper }}</td>
+                  <td>{{ item.event_type.replace('_', ' ')|title }}</td>
+                  <td>{{ item.requested_at }}</td>
+                  <td>{{ item.status|title }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <p>No attendance events are available yet.</p>
+          {% endif %}
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

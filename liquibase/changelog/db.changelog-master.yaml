@@ -13,3 +13,10 @@ databaseChangeLog:
         - sqlFile:
             path: 002-create-attendance-events-table.sql
             relativeToChangelogFile: true
+  - changeSet:
+      id: 003-create-auth-events-table
+      author: codex
+      changes:
+        - sqlFile:
+            path: 003-create-auth-events-table.sql
+            relativeToChangelogFile: true

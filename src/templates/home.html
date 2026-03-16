@@ -8,14 +8,40 @@
   </head>
   <body>
     <main class="container">
-      <h1>Pranathi App</h1>
-      <p>Tenant-aware attendance system built with FastAPI, PostgreSQL, IoT Hub, Azure Functions, Service Bus, and Redis.</p>
-      {% if session_user %}
-      <a class="btn" href="/dashboard">Go to dashboard</a>
-      <a class="btn secondary" href="/logout">Logout</a>
-      {% else %}
-      <a class="btn" href="/signup">Create account</a>
-      <a class="btn secondary" href="/login">Login</a>
+      <section class="hero-card">
+        <p class="eyebrow">Pranathi Attendance Suite</p>
+        <h1>Tenant-aware attendance and admin monitoring</h1>
+        <p>
+          FastAPI, PostgreSQL, IoT Hub, Azure Functions, Service Bus, Redis, and an admin console for
+          tracking login and logout activity.
+        </p>
+      </section>
+
+      <section class="dashboard-grid">
+        <article class="card">
+          <h2>Employee App</h2>
+          <p>Use this area for signup, login, and attendance punch actions.</p>
+          {% if session_user %}
+          <a class="btn" href="/dashboard">Go to dashboard</a>
+          {% else %}
+          <a class="btn" href="/signup">Create account</a>
+          <a class="btn secondary" href="/login">Login</a>
+          {% endif %}
+        </article>
+
+        <article class="card">
+          <h2>Admin App</h2>
+          <p>Review recent logins, logouts, and attendance activity across tenants.</p>
+          {% if session_admin %}
+          <a class="btn" href="/admin/dashboard">Open admin dashboard</a>
+          {% else %}
+          <a class="btn secondary" href="/admin/login">Admin login</a>
+          {% endif %}
+        </article>
+      </section>
+
+      {% if session_user or session_admin %}
+      <p><a href="/logout">Logout from current session</a></p>
       {% endif %}
     </main>
   </body>
