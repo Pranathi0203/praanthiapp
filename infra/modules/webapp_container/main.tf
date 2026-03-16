@@ -93,7 +93,6 @@ locals {
     {
       "AzureWebJobsStorage"      = azurerm_storage_account.function.primary_connection_string
       "FUNCTIONS_WORKER_RUNTIME" = "python"
-      "WEBSITE_RUN_FROM_PACKAGE" = "1"
       "SCM_DO_BUILD_DURING_DEPLOYMENT" = "true"
       "ENABLE_ORYX_BUILD"              = "true"
       "ATTENDANCE_QUEUE_NAME"    = azurerm_servicebus_queue.attendance.name
