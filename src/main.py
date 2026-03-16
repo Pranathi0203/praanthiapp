@@ -610,3 +610,21 @@ def logout(request: Request):
         record_auth_event(session_admin["email"], "admin", "logout", actor_type="admin")
     request.session.clear()
     return RedirectResponse("/", status_code=303)
+
+
+@app.get("/employee/logout")
+def employee_logout(request: Request):
+    session_user = require_user_session(request)
+    if session_user:
+        record_auth_event(session_user["email"], session_user["organization"], "logout")
+    request.session.pop("user", None)
+    return RedirectResponse("/", status_code=303)
+
+
+@app.get("/admin/logout")
+def admin_logout(request: Request):
+    session_admin = require_admin_session(request)
+    if session_admin:
+        record_auth_event(session_admin["email"], "admin", "logout", actor_type="admin")
+    request.session.pop("admin", None)
+    return RedirectResponse("/", status_code=303)

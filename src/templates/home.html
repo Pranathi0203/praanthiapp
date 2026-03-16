@@ -40,8 +40,11 @@
         </article>
       </section>
 
-      {% if session_user or session_admin %}
-      <p><a href="/logout">Logout from current session</a></p>
+      {% if session_user %}
+      <p><a href="/employee/logout">Logout employee session</a></p>
+      {% endif %}
+      {% if session_admin %}
+      <p><a href="/admin/logout">Logout admin session</a></p>
       {% endif %}
     </main>
   </body>
