@@ -3,6 +3,11 @@ name: CI - Build & Push
 on:
   push:
     branches: ["main"]
+    paths:
+      - "Dockerfile"
+      - "src/**"
+      - "functions/**"
+  workflow_dispatch:
 
 permissions:
   id-token: write

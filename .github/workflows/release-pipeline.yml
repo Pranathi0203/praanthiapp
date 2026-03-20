@@ -1,9 +1,16 @@
 name: Release Pipeline
 
 on:
-  workflow_run:
-    workflows: ["CI - Build & Push"]
-    types: [completed]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Image tag already pushed to ACR
+        required: true
+      deploy_qa:
+        description: Continue from dev to qa
+        type: boolean
+        required: true
+        default: true
 
 permissions:
   id-token: write
@@ -19,25 +26,16 @@ env:
 
 jobs:
   prepare:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download image tag artifact from CI
-        uses: actions/download-artifact@v4
-        with:
-          name: image-metadata
-          path: .
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Read image tag
+      - name: Use requested image tag
         id: meta
         run: |
-          TAG="$(cut -d: -f2 image.txt)"
+          TAG="${{ inputs.image_tag }}"
           echo "image_tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Using tag=$TAG"
 
@@ -318,6 +316,7 @@ jobs:
 
   infra_qa:
     needs: [prepare, deploy_dev]
+    if: ${{ inputs.deploy_qa }}
     runs-on: ubuntu-latest
     environment: qa
     env:
@@ -462,6 +461,7 @@ jobs:
 
   migrate_qa:
     needs: infra_qa
+    if: ${{ inputs.deploy_qa }}
     runs-on: ubuntu-latest
     environment: qa
     env:
@@ -520,6 +520,7 @@ jobs:
 
   deploy_qa:
     needs: [prepare, migrate_qa]
+    if: ${{ inputs.deploy_qa }}
     runs-on: ubuntu-latest
     environment: qa
     steps:
