@@ -23,7 +23,6 @@ concurrency:
 
 env:
   IMAGE_NAME: myapp
-  DEFAULT_ALLOWED_CLIENT_CIDR: 174.165.209.210/32
 
 jobs:
   prepare:
@@ -59,7 +58,7 @@ jobs:
       TF_VAR_image_name: myapp
       TF_VAR_image_tag: ${{ needs.prepare.outputs.image_tag }}
       TF_VAR_container_port: ${{ vars.CONTAINER_PORT }}
-      TF_VAR_allowed_client_cidr: ${{ vars.ALLOWED_CLIENT_CIDR || env.DEFAULT_ALLOWED_CLIENT_CIDR }}
+      TF_VAR_allowed_client_cidr: ${{ vars.ALLOWED_CLIENT_CIDR || '174.165.209.210/32' }}
       TF_VAR_contoso_device_connection_string: ${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}
       TF_VAR_litware_device_connection_string: ${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}
       TF_VAR_iothub_eventhub_connection_string: ${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}
@@ -207,7 +206,7 @@ jobs:
             -var="image_name=${{ env.IMAGE_NAME }}" \
             -var="image_tag=${{ needs.prepare.outputs.image_tag }}" \
             -var="container_port=${{ vars.CONTAINER_PORT }}" \
-            -var="allowed_client_cidr=${{ vars.ALLOWED_CLIENT_CIDR || env.DEFAULT_ALLOWED_CLIENT_CIDR }}" \
+            -var="allowed_client_cidr=${{ vars.ALLOWED_CLIENT_CIDR || '174.165.209.210/32' }}" \
             -var="contoso_device_connection_string=${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}" \
             -var="litware_device_connection_string=${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}" \
             -var="iothub_eventhub_connection_string=${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}" \
@@ -328,7 +327,7 @@ jobs:
       TF_VAR_image_name: myapp
       TF_VAR_image_tag: ${{ needs.prepare.outputs.image_tag }}
       TF_VAR_container_port: ${{ vars.CONTAINER_PORT }}
-      TF_VAR_allowed_client_cidr: ${{ vars.ALLOWED_CLIENT_CIDR || env.DEFAULT_ALLOWED_CLIENT_CIDR }}
+      TF_VAR_allowed_client_cidr: ${{ vars.ALLOWED_CLIENT_CIDR || '174.165.209.210/32' }}
       TF_VAR_contoso_device_connection_string: ${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}
       TF_VAR_litware_device_connection_string: ${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}
       TF_VAR_iothub_eventhub_connection_string: ${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}
@@ -440,7 +439,7 @@ jobs:
             -var="image_name=${{ env.IMAGE_NAME }}" \
             -var="image_tag=${{ needs.prepare.outputs.image_tag }}" \
             -var="container_port=${{ vars.CONTAINER_PORT }}" \
-            -var="allowed_client_cidr=${{ vars.ALLOWED_CLIENT_CIDR || env.DEFAULT_ALLOWED_CLIENT_CIDR }}" \
+            -var="allowed_client_cidr=${{ vars.ALLOWED_CLIENT_CIDR || '174.165.209.210/32' }}" \
             -var="contoso_device_connection_string=${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}" \
             -var="litware_device_connection_string=${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}" \
             -var="iothub_eventhub_connection_string=${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}" \
