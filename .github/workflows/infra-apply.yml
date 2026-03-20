@@ -63,6 +63,56 @@ jobs:
         with:
           terraform_version: 1.7.5
 
+      - name: Ensure Azure prerequisites exist
+        run: |
+          az group create \
+            --name "${{ vars.TFSTATE_RG }}" \
+            --location "${{ vars.LOCATION }}"
+
+          az group create \
+            --name "${{ vars.RG_NAME }}" \
+            --location "${{ vars.LOCATION }}"
+
+          az group create \
+            --name "${{ vars.ACR_RG_NAME }}" \
+            --location "${{ vars.LOCATION }}"
+
+          if ! az storage account show --name "${{ vars.TFSTATE_STORAGE }}" --resource-group "${{ vars.TFSTATE_RG }}" >/dev/null 2>&1; then
+            az storage account create \
+              --name "${{ vars.TFSTATE_STORAGE }}" \
+              --resource-group "${{ vars.TFSTATE_RG }}" \
+              --location "${{ vars.LOCATION }}" \
+              --sku Standard_LRS \
+              --kind StorageV2 \
+              --allow-blob-public-access false \
+              --min-tls-version TLS1_2
+          fi
+
+          STORAGE_KEY="$(az storage account keys list \
+            --resource-group "${{ vars.TFSTATE_RG }}" \
+            --account-name "${{ vars.TFSTATE_STORAGE }}" \
+            --query '[0].value' -o tsv)"
+
+          if ! az storage container exists \
+            --name "${{ vars.TFSTATE_CONTAINER }}" \
+            --account-name "${{ vars.TFSTATE_STORAGE }}" \
+            --account-key "$STORAGE_KEY" \
+            --query exists -o tsv | grep -qi true; then
+            az storage container create \
+              --name "${{ vars.TFSTATE_CONTAINER }}" \
+              --account-name "${{ vars.TFSTATE_STORAGE }}" \
+              --account-key "$STORAGE_KEY"
+          fi
+
+          if ! az acr show --name "${{ secrets.ACR_NAME }}" --resource-group "${{ vars.ACR_RG_NAME }}" >/dev/null 2>&1; then
+            az acr create \
+              --name "${{ secrets.ACR_NAME }}" \
+              --resource-group "${{ vars.ACR_RG_NAME }}" \
+              --location "${{ vars.LOCATION }}" \
+              --sku Basic \
+              --admin-enabled false
+          fi
+
       - name: Terraform init
         working-directory: infra/envs/${{ inputs.environment }}
         run: |
@@ -76,7 +126,12 @@ jobs:
         if: ${{ inputs.environment == 'dev' }}
         working-directory: infra/envs/${{ inputs.environment }}
         run: |
-          KV_NAME="$(terraform output -raw key_vault_name)"
+          KV_NAME="$(terraform output -raw key_vault_name 2>/dev/null || true)"
+
+          if [ -z "$KV_NAME" ]; then
+            echo "No existing Terraform output for key_vault_name. Skipping secret import on first deployment."
+            exit 0
+          fi
 
           import_secret_if_needed() {
             local address="$1"
