@@ -32,6 +32,10 @@ jobs:
             exit 1
           fi
 
+          az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          az provider register --namespace Microsoft.ContainerRegistry --wait
+          az provider register --namespace Microsoft.Storage --wait
+
           az group create \
             --name "${{ vars.ACR_RG_NAME }}" \
             --location "${{ vars.LOCATION }}"

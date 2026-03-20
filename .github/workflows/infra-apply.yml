@@ -65,6 +65,22 @@ jobs:
 
       - name: Ensure Azure prerequisites exist
         run: |
+          az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+
+          for provider in \
+            Microsoft.Storage \
+            Microsoft.ContainerRegistry \
+            Microsoft.Web \
+            Microsoft.Network \
+            Microsoft.DBforPostgreSQL \
+            Microsoft.KeyVault \
+            Microsoft.Cache \
+            Microsoft.ServiceBus \
+            Microsoft.Devices \
+            Microsoft.ApiManagement; do
+            az provider register --namespace "$provider" --wait
+          done
+
           az group create \
             --name "${{ vars.TFSTATE_RG }}" \
             --location "${{ vars.LOCATION }}"
