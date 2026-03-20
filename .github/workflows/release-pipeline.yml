@@ -23,6 +23,7 @@ concurrency:
 
 env:
   IMAGE_NAME: myapp
+  DEFAULT_ALLOWED_CLIENT_CIDR: 174.165.209.210/32
 
 jobs:
   prepare:
@@ -58,20 +59,13 @@ jobs:
       TF_VAR_image_name: myapp
       TF_VAR_image_tag: ${{ needs.prepare.outputs.image_tag }}
       TF_VAR_container_port: ${{ vars.CONTAINER_PORT }}
-      TF_VAR_allowed_client_cidr: ${{ vars.ALLOWED_CLIENT_CIDR }}
+      TF_VAR_allowed_client_cidr: ${{ vars.ALLOWED_CLIENT_CIDR || env.DEFAULT_ALLOWED_CLIENT_CIDR }}
       TF_VAR_contoso_device_connection_string: ${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}
       TF_VAR_litware_device_connection_string: ${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}
       TF_VAR_iothub_eventhub_connection_string: ${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}
       TF_VAR_application_insights_connection_string: ${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Validate environment CIDR
-        run: |
-          if [ -z "${{ vars.ALLOWED_CLIENT_CIDR }}" ]; then
-            echo "ALLOWED_CLIENT_CIDR variable is required for the dev environment."
-            exit 1
-          fi
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -213,7 +207,7 @@ jobs:
             -var="image_name=${{ env.IMAGE_NAME }}" \
             -var="image_tag=${{ needs.prepare.outputs.image_tag }}" \
             -var="container_port=${{ vars.CONTAINER_PORT }}" \
-            -var="allowed_client_cidr=${{ vars.ALLOWED_CLIENT_CIDR }}" \
+            -var="allowed_client_cidr=${{ vars.ALLOWED_CLIENT_CIDR || env.DEFAULT_ALLOWED_CLIENT_CIDR }}" \
             -var="contoso_device_connection_string=${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}" \
             -var="litware_device_connection_string=${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}" \
             -var="iothub_eventhub_connection_string=${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}" \
@@ -334,20 +328,13 @@ jobs:
       TF_VAR_image_name: myapp
       TF_VAR_image_tag: ${{ needs.prepare.outputs.image_tag }}
       TF_VAR_container_port: ${{ vars.CONTAINER_PORT }}
-      TF_VAR_allowed_client_cidr: ${{ vars.ALLOWED_CLIENT_CIDR }}
+      TF_VAR_allowed_client_cidr: ${{ vars.ALLOWED_CLIENT_CIDR || env.DEFAULT_ALLOWED_CLIENT_CIDR }}
       TF_VAR_contoso_device_connection_string: ${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}
       TF_VAR_litware_device_connection_string: ${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}
       TF_VAR_iothub_eventhub_connection_string: ${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}
       TF_VAR_application_insights_connection_string: ${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Validate environment CIDR
-        run: |
-          if [ -z "${{ vars.ALLOWED_CLIENT_CIDR }}" ]; then
-            echo "ALLOWED_CLIENT_CIDR variable is required for the qa environment."
-            exit 1
-          fi
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -453,7 +440,7 @@ jobs:
             -var="image_name=${{ env.IMAGE_NAME }}" \
             -var="image_tag=${{ needs.prepare.outputs.image_tag }}" \
             -var="container_port=${{ vars.CONTAINER_PORT }}" \
-            -var="allowed_client_cidr=${{ vars.ALLOWED_CLIENT_CIDR }}" \
+            -var="allowed_client_cidr=${{ vars.ALLOWED_CLIENT_CIDR || env.DEFAULT_ALLOWED_CLIENT_CIDR }}" \
             -var="contoso_device_connection_string=${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}" \
             -var="litware_device_connection_string=${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}" \
             -var="iothub_eventhub_connection_string=${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}" \

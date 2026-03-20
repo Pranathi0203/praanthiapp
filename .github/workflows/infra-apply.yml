@@ -12,7 +12,11 @@ on:
         required: true
       allowed_client_cidr:
         description: CIDR allowed to access the app and SCM endpoints
-        required: true
+        required: false
+        default: 174.165.209.210/32
+
+env:
+  DEFAULT_ALLOWED_CLIENT_CIDR: 174.165.209.210/32
 
 permissions:
   id-token: write
@@ -43,7 +47,7 @@ jobs:
       TF_VAR_image_name: myapp
       TF_VAR_image_tag: ${{ inputs.image_tag }}
       TF_VAR_container_port: ${{ vars.CONTAINER_PORT }}
-      TF_VAR_allowed_client_cidr: ${{ inputs.allowed_client_cidr }}
+      TF_VAR_allowed_client_cidr: ${{ inputs.allowed_client_cidr || env.DEFAULT_ALLOWED_CLIENT_CIDR }}
       TF_VAR_contoso_device_connection_string: ${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}
       TF_VAR_litware_device_connection_string: ${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}
       TF_VAR_iothub_eventhub_connection_string: ${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}
@@ -187,11 +191,6 @@ jobs:
             exit 1
           fi
 
-          if [ -z "${{ inputs.allowed_client_cidr }}" ]; then
-            echo "allowed_client_cidr is required."
-            exit 1
-          fi
-
           terraform apply -auto-approve -lock-timeout=5m \
             -var="location=${{ vars.LOCATION }}" \
             -var="rg_name=${{ vars.RG_NAME }}" \
@@ -203,7 +202,7 @@ jobs:
             -var="image_name=${{ env.IMAGE_NAME }}" \
             -var="image_tag=${{ inputs.image_tag }}" \
             -var="container_port=${{ vars.CONTAINER_PORT }}" \
-            -var="allowed_client_cidr=${{ inputs.allowed_client_cidr }}" \
+            -var="allowed_client_cidr=${{ inputs.allowed_client_cidr || env.DEFAULT_ALLOWED_CLIENT_CIDR }}" \
             -var="contoso_device_connection_string=${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}" \
             -var="litware_device_connection_string=${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}" \
             -var="iothub_eventhub_connection_string=${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}" \

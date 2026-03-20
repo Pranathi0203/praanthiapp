@@ -10,27 +10,26 @@
     <main class="container">
       <section class="hero-card">
         <p class="eyebrow">Pranathi Attendance Suite</p>
-        <h1>Tenant-aware attendance and admin monitoring</h1>
+        <h1>Admin web portal with a mobile employee attendance app</h1>
         <p>
-          FastAPI, PostgreSQL, IoT Hub, Azure Functions, Service Bus, Redis, and an admin console for
-          tracking login and logout activity.
+          Employees now use the Android app for login and punch actions. The website is focused on
+          admin monitoring while the backend continues routing attendance through IoT Hub, Azure Functions,
+          Service Bus, and PostgreSQL.
         </p>
       </section>
 
+      {% if msg %}<p class="ok banner">{{ msg }}</p>{% endif %}
+
       <section class="dashboard-grid">
         <article class="card">
-          <h2>Employee App</h2>
-          <p>Use this area for signup, login, and attendance punch actions.</p>
-          {% if session_user %}
-          <a class="btn" href="/dashboard">Go to dashboard</a>
-          {% else %}
-          <a class="btn" href="/signup">Create account</a>
-          <a class="btn secondary" href="/login">Login</a>
-          {% endif %}
+          <h2>Employee Android App</h2>
+          <p>Use the Android app in the repo to sign up, log in, punch in, punch out, and review recent attendance history.</p>
+          <p>The mobile app calls `/api/mobile/*` endpoints and sends attendance events into the same Azure IoT pipeline used by the backend.</p>
+          <p>Project path: <strong>mobile/pranathi-employee-android</strong></p>
         </article>
 
         <article class="card">
-          <h2>Admin App</h2>
+          <h2>Admin Web Portal</h2>
           <p>Review recent logins, logouts, and attendance activity across tenants.</p>
           {% if session_admin %}
           <a class="btn" href="/admin/dashboard">Open admin dashboard</a>
@@ -40,9 +39,6 @@
         </article>
       </section>
 
-      {% if session_user %}
-      <p><a href="/employee/logout">Logout employee session</a></p>
-      {% endif %}
       {% if session_admin %}
       <p><a href="/admin/logout">Logout admin session</a></p>
       {% endif %}
