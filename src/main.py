@@ -8,13 +8,15 @@ from urllib.parse import urlparse, urlunparse
 
 import psycopg
 from azure.monitor.opentelemetry import configure_azure_monitor
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, Form, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from opentelemetry import trace
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.trace.status import Status, StatusCode
+from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
 try:
@@ -58,6 +60,7 @@ logger = logging.getLogger(__name__)
 
 _redis_client = None
 _tenant_iot_clients = {}
+_mobile_token_serializer = URLSafeTimedSerializer(APP_SECRET, salt="employee-mobile-auth")
 
 
 def setup_telemetry():
@@ -137,6 +140,26 @@ def get_redis_client():
 
     _redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
     return _redis_client
+
+
+def create_mobile_token(user_email: str, organization: str) -> str:
+    return _mobile_token_serializer.dumps({"email": user_email, "organization": organization})
+
+
+def verify_mobile_token(token: str) -> dict:
+    try:
+        payload = _mobile_token_serializer.loads(token, max_age=60 * 60 * 24 * 7)
+    except SignatureExpired as exc:
+        raise HTTPException(status_code=401, detail="Session expired. Please log in again.") from exc
+    except BadSignature as exc:
+        raise HTTPException(status_code=401, detail="Invalid mobile session token.") from exc
+
+    email = payload.get("email")
+    organization = payload.get("organization")
+    if not email or not organization:
+        raise HTTPException(status_code=401, detail="Incomplete mobile session token.")
+
+    return {"email": email, "organization": organization}
 
 
 def get_device_connection_string_for_org(org: str) -> str:
@@ -240,7 +263,13 @@ def ensure_admin_schema():
         conn.commit()
 
 
-def record_auth_event(user_email: str, organization: str, event_type: str, actor_type: str = "employee"):
+def record_auth_event(
+    user_email: str,
+    organization: str,
+    event_type: str,
+    actor_type: str = "employee",
+    source: str = "webapp",
+):
     try:
         ensure_admin_schema()
         with get_conn(get_admin_db_url()) as conn:
@@ -255,7 +284,7 @@ def record_auth_event(user_email: str, organization: str, event_type: str, actor
                         organization,
                         actor_type,
                         event_type,
-                        json.dumps({"source": "webapp"}),
+                        json.dumps({"source": source}),
                     ),
                 )
             conn.commit()
@@ -279,6 +308,145 @@ def require_admin_session(request: Request):
     if not session_admin.get("email"):
         return None
     return session_admin
+
+
+class MobileCredentials(BaseModel):
+    email: str
+    password: str = Field(min_length=8)
+
+
+class MobilePunchRequest(BaseModel):
+    action: str
+
+
+def authenticate_employee(email: str, password: str) -> dict:
+    normalized = email.lower().strip()
+    org = get_org_for_email(normalized)
+    if not org:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only {CONTOSO_DOMAIN} and {LITWARE_DOMAIN} emails are allowed.",
+        )
+
+    try:
+        db_url = get_db_url_for_org(org)
+        ensure_schema(db_url)
+        with get_conn(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT email FROM app_users WHERE email = %s AND password_hash = %s",
+                    (normalized, hash_password(password)),
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=401, detail="Invalid email or password.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        record_exception_to_telemetry(exc)
+        raise HTTPException(status_code=500, detail="Database connection failed.") from exc
+
+    return {"email": normalized, "organization": org}
+
+
+def create_employee_account(email: str, password: str) -> dict:
+    normalized = email.lower().strip()
+    org = get_org_for_email(normalized)
+    if not org:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only {CONTOSO_DOMAIN} and {LITWARE_DOMAIN} emails are allowed.",
+        )
+
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+
+    try:
+        db_url = get_db_url_for_org(org)
+        ensure_schema(db_url)
+        with get_conn(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM app_users WHERE email = %s", (normalized,))
+                if cur.fetchone():
+                    raise HTTPException(status_code=409, detail="Email already exists.")
+
+                cur.execute(
+                    "INSERT INTO app_users(email, password_hash) VALUES(%s, %s)",
+                    (normalized, hash_password(password)),
+                )
+            conn.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        record_exception_to_telemetry(exc)
+        raise HTTPException(status_code=500, detail="Database connection failed.") from exc
+
+    return {"email": normalized, "organization": org}
+
+
+def load_attendance_history(user_email: str, organization: str, limit: int = 20):
+    try:
+        db_url = get_db_url_for_org(organization)
+        ensure_schema(db_url)
+        with get_conn(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT event_type, requested_at, processed_at, status, source
+                    FROM attendance_events
+                    WHERE user_email = %s
+                    ORDER BY requested_at DESC
+                    LIMIT %s
+                    """,
+                    (user_email, limit),
+                )
+                return [
+                    {
+                        "event_type": row[0],
+                        "requested_at": row[1].isoformat() if row[1] else None,
+                        "processed_at": row[2].isoformat() if row[2] else None,
+                        "status": row[3],
+                        "source": row[4],
+                    }
+                    for row in cur.fetchall()
+                ]
+    except Exception as exc:
+        record_exception_to_telemetry(exc)
+        raise HTTPException(status_code=500, detail="Attendance history could not be loaded.") from exc
+
+
+def queue_attendance_event(user_email: str, organization: str, action: str, source: str):
+    normalized_action = action.lower().strip()
+    if normalized_action not in {"punch_in", "punch_out"}:
+        raise HTTPException(status_code=400, detail="Invalid attendance action.")
+
+    payload = {
+        "event_id": str(uuid.uuid4()),
+        "user_email": user_email,
+        "organization": organization,
+        "event_type": normalized_action,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+    }
+
+    try:
+        publish_attendance_event(organization, payload)
+    except Exception as exc:
+        record_exception_to_telemetry(exc)
+        raise HTTPException(status_code=502, detail="Attendance event could not be queued to IoT Hub.") from exc
+
+    return payload
+
+
+def get_mobile_user_from_header(authorization: str | None) -> dict:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header is required.")
+
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="Authorization header must use Bearer token.")
+
+    return verify_mobile_token(token)
 
 
 def load_dashboard_context(request: Request, msg: str = "", error: str = ""):
@@ -436,12 +604,12 @@ def load_admin_dashboard_context(request: Request, msg: str = "", error: str = "
 
 
 @app.get("/", response_class=HTMLResponse)
-def home(request: Request):
+def home(request: Request, msg: str = ""):
     session_user = require_user_session(request)
     session_admin = require_admin_session(request)
     return templates.TemplateResponse(
         "home.html",
-        {"request": request, "session_user": session_user, "session_admin": session_admin},
+        {"request": request, "session_user": session_user, "session_admin": session_admin, "msg": msg},
     )
 
 
@@ -457,85 +625,40 @@ def hello(name: str):
 
 @app.get("/signup", response_class=HTMLResponse)
 def signup_page(request: Request, msg: str = ""):
-    return templates.TemplateResponse("signup.html", {"request": request, "msg": msg})
+    return RedirectResponse("/?msg=Employee+signup+has+moved+to+the+Android+app", status_code=303)
 
 
 @app.post("/signup")
 def signup(email: str = Form(...), password: str = Form(...), confirm_password: str = Form(...)):
-    normalized = email.lower().strip()
-    org = get_org_for_email(normalized)
-    if not org:
-        return RedirectResponse(
-            f"/signup?msg=Only+{CONTOSO_DOMAIN}+and+{LITWARE_DOMAIN}+emails+are+allowed",
-            status_code=303,
-        )
-
     if password != confirm_password:
-        return RedirectResponse("/signup?msg=Passwords+do+not+match", status_code=303)
-
-    if len(password) < 8:
-        return RedirectResponse("/signup?msg=Password+must+be+at+least+8+characters", status_code=303)
+        return RedirectResponse("/?msg=Passwords+do+not+match", status_code=303)
 
     try:
-        db_url = get_db_url_for_org(org)
-        ensure_schema(db_url)
-        with get_conn(db_url) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT id FROM app_users WHERE email = %s", (normalized,))
-                if cur.fetchone():
-                    return RedirectResponse("/signup?msg=Email+already+exists", status_code=303)
+        create_employee_account(email, password)
+    except HTTPException as exc:
+        return RedirectResponse(f"/?msg={exc.detail.replace(' ', '+')}", status_code=303)
 
-                cur.execute(
-                    "INSERT INTO app_users(email, password_hash) VALUES(%s, %s)",
-                    (normalized, hash_password(password)),
-                )
-            conn.commit()
-    except Exception as exc:
-        record_exception_to_telemetry(exc)
-        return RedirectResponse("/signup?msg=Database+connection+failed", status_code=303)
-
-    return RedirectResponse("/login?msg=Account+created+successfully", status_code=303)
+    return RedirectResponse("/?msg=Account+created+in+mobile+employee+app", status_code=303)
 
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, msg: str = ""):
-    return templates.TemplateResponse("login.html", {"request": request, "msg": msg})
+    return RedirectResponse("/?msg=Employee+login+has+moved+to+the+Android+app", status_code=303)
 
 
 @app.post("/login")
 def login(request: Request, email: str = Form(...), password: str = Form(...)):
-    normalized = email.lower().strip()
-    org = get_org_for_email(normalized)
-    if not org:
-        return RedirectResponse(
-            f"/login?msg=Only+{CONTOSO_DOMAIN}+and+{LITWARE_DOMAIN}+emails+are+allowed",
-            status_code=303,
-        )
-
     try:
-        db_url = get_db_url_for_org(org)
-        ensure_schema(db_url)
-        with get_conn(db_url) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT email FROM app_users WHERE email = %s AND password_hash = %s",
-                    (normalized, hash_password(password)),
-                )
-                row = cur.fetchone()
-                if not row:
-                    return RedirectResponse("/login?msg=Invalid+email+or+password", status_code=303)
-    except Exception as exc:
-        record_exception_to_telemetry(exc)
-        return RedirectResponse("/login?msg=Database+connection+failed", status_code=303)
+        authenticate_employee(email, password)
+    except HTTPException as exc:
+        return RedirectResponse(f"/?msg={exc.detail.replace(' ', '+')}", status_code=303)
 
-    request.session["user"] = {"email": normalized, "organization": org}
-    record_auth_event(normalized, org, "login")
-    return RedirectResponse("/dashboard?msg=Welcome+back", status_code=303)
+    return RedirectResponse("/?msg=Employee+login+has+moved+to+the+Android+app", status_code=303)
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, msg: str = "", error: str = ""):
-    return load_dashboard_context(request, msg=msg, error=error)
+    return RedirectResponse("/?msg=Employee+dashboard+is+available+in+the+Android+app", status_code=303)
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -568,36 +691,7 @@ def admin_dashboard(request: Request, msg: str = "", error: str = ""):
 
 @app.post("/attendance/punch")
 def attendance_punch(request: Request, action: str = Form(...)):
-    session_user = require_user_session(request)
-    if not session_user:
-        return RedirectResponse("/login?msg=Please+log+in+to+continue", status_code=303)
-
-    normalized_action = action.lower().strip()
-    if normalized_action not in {"punch_in", "punch_out"}:
-        return RedirectResponse("/dashboard?error=Invalid+attendance+action", status_code=303)
-
-    payload = {
-        "event_id": str(uuid.uuid4()),
-        "user_email": session_user["email"],
-        "organization": session_user["organization"],
-        "event_type": normalized_action,
-        "requested_at": datetime.now(timezone.utc).isoformat(),
-        "source": "webapp",
-    }
-
-    try:
-        publish_attendance_event(session_user["organization"], payload)
-    except Exception as exc:
-        record_exception_to_telemetry(exc)
-        return RedirectResponse(
-            "/dashboard?error=Attendance+event+could+not+be+queued+to+IoT+Hub",
-            status_code=303,
-        )
-
-    return RedirectResponse(
-        f"/dashboard?msg={normalized_action.replace('_', '+').title()}+queued+through+IoT+Hub",
-        status_code=303,
-    )
+    return RedirectResponse("/?msg=Attendance+punching+has+moved+to+the+Android+app", status_code=303)
 
 
 @app.get("/logout")
@@ -628,3 +722,69 @@ def admin_logout(request: Request):
         record_auth_event(session_admin["email"], "admin", "logout", actor_type="admin")
     request.session.pop("admin", None)
     return RedirectResponse("/", status_code=303)
+
+
+@app.post("/api/mobile/signup")
+def mobile_signup(payload: MobileCredentials):
+    employee = create_employee_account(payload.email, payload.password)
+    token = create_mobile_token(employee["email"], employee["organization"])
+    record_auth_event(employee["email"], employee["organization"], "signup", source="mobile-app")
+    record_auth_event(employee["email"], employee["organization"], "login", source="mobile-app")
+    return JSONResponse(
+        {
+            "token": token,
+            "user": employee,
+            "message": "Account created successfully.",
+        }
+    )
+
+
+@app.post("/api/mobile/login")
+def mobile_login(payload: MobileCredentials):
+    employee = authenticate_employee(payload.email, payload.password)
+    token = create_mobile_token(employee["email"], employee["organization"])
+    record_auth_event(employee["email"], employee["organization"], "login", source="mobile-app")
+    return JSONResponse(
+        {
+            "token": token,
+            "user": employee,
+            "message": "Login successful.",
+        }
+    )
+
+
+@app.get("/api/mobile/me")
+def mobile_me(authorization: str | None = Header(default=None)):
+    employee = get_mobile_user_from_header(authorization)
+    return JSONResponse({"user": employee})
+
+
+@app.get("/api/mobile/attendance/history")
+def mobile_attendance_history(authorization: str | None = Header(default=None)):
+    employee = get_mobile_user_from_header(authorization)
+    history = load_attendance_history(employee["email"], employee["organization"])
+    return JSONResponse({"history": history})
+
+
+@app.post("/api/mobile/attendance/punch")
+def mobile_attendance_punch(payload: MobilePunchRequest, authorization: str | None = Header(default=None)):
+    employee = get_mobile_user_from_header(authorization)
+    event = queue_attendance_event(
+        employee["email"],
+        employee["organization"],
+        payload.action,
+        source="mobile-app",
+    )
+    return JSONResponse(
+        {
+            "message": f"{event['event_type'].replace('_', ' ').title()} queued through IoT Hub.",
+            "event": event,
+        }
+    )
+
+
+@app.post("/api/mobile/logout")
+def mobile_logout(authorization: str | None = Header(default=None)):
+    employee = get_mobile_user_from_header(authorization)
+    record_auth_event(employee["email"], employee["organization"], "logout", source="mobile-app")
+    return JSONResponse({"message": "Logout recorded."})
