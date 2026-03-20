@@ -90,9 +90,12 @@ jobs:
         run: |
           az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
 
+          for provider in Microsoft.Storage Microsoft.ContainerRegistry; do
+            echo "Registering required bootstrap provider: $provider"
+            az provider register --namespace "$provider" --wait
+          done
+
           for provider in \
-            Microsoft.Storage \
-            Microsoft.ContainerRegistry \
             Microsoft.Web \
             Microsoft.Network \
             Microsoft.DBforPostgreSQL \
@@ -101,7 +104,8 @@ jobs:
             Microsoft.ServiceBus \
             Microsoft.Devices \
             Microsoft.ApiManagement; do
-            az provider register --namespace "$provider" --wait
+            echo "Starting provider registration in background: $provider"
+            az provider register --namespace "$provider"
           done
 
           az group create \
@@ -361,9 +365,12 @@ jobs:
         run: |
           az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
 
+          for provider in Microsoft.Storage Microsoft.ContainerRegistry; do
+            echo "Registering required bootstrap provider: $provider"
+            az provider register --namespace "$provider" --wait
+          done
+
           for provider in \
-            Microsoft.Storage \
-            Microsoft.ContainerRegistry \
             Microsoft.Web \
             Microsoft.Network \
             Microsoft.DBforPostgreSQL \
@@ -372,7 +379,8 @@ jobs:
             Microsoft.ServiceBus \
             Microsoft.Devices \
             Microsoft.ApiManagement; do
-            az provider register --namespace "$provider" --wait
+            echo "Starting provider registration in background: $provider"
+            az provider register --namespace "$provider"
           done
 
           az group create \

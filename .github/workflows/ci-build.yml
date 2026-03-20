@@ -33,7 +33,9 @@ jobs:
           fi
 
           az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          echo "Registering required bootstrap provider: Microsoft.ContainerRegistry"
           az provider register --namespace Microsoft.ContainerRegistry --wait
+          echo "Registering required bootstrap provider: Microsoft.Storage"
           az provider register --namespace Microsoft.Storage --wait
 
           az group create \
