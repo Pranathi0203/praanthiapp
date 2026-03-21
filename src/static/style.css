@@ -49,6 +49,11 @@ input {
   margin-top: 0.35rem;
 }
 
+input[type="checkbox"] {
+  width: auto;
+  margin-top: 0;
+}
+
 .btn {
   display: inline-block;
   margin-top: 1rem;
@@ -152,6 +157,28 @@ input {
   margin-right: 0.75rem;
 }
 
+.inline-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-right: 0.75rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0;
+  font-weight: 500;
+  color: #42556f;
+}
+
+.compact-btn {
+  margin-top: 0;
+}
+
 .plain-list {
   padding-left: 1rem;
   margin-bottom: 0;
@@ -241,6 +268,12 @@ th {
   color: #18407f;
   font-size: 0.85rem;
   font-weight: 600;
+}
+
+.chip-muted {
+  background: #eef1f6;
+  color: #57677d;
+  margin-left: 0.5rem;
 }
 
 @media (max-width: 640px) {

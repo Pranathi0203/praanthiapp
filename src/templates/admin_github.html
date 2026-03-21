@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>GitHub Approvals</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="container container-wide">
+      <section class="hero admin-hero">
+        <div>
+          <p class="eyebrow">Admin App</p>
+          <h1>GitHub pull request approvals</h1>
+          <p>
+            Connected repo: <strong>{{ github_repository }}</strong><br />
+            Signed in as <strong>{{ admin_email }}</strong>
+          </p>
+        </div>
+        <div class="hero-actions">
+          <a class="icon-btn" href="/admin/github" title="Refresh pull requests" aria-label="Refresh pull requests">
+            &#x21bb;
+          </a>
+          <a class="btn secondary" href="/admin/dashboard">Back to dashboard</a>
+          <a class="btn" href="/admin/logout">Logout</a>
+        </div>
+      </section>
+
+      {% if msg %}<p class="ok banner">{{ msg }}</p>{% endif %}
+      {% if error %}<p class="error banner">{{ error }}</p>{% endif %}
+
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Workflow behavior</p>
+            <h2>Approve or reject incoming changes</h2>
+          </div>
+        </div>
+
+        {% if github_configured %}
+        <p>
+          Approve merges the PR, waits for the CI image build, and then starts the release workflow. Reject closes
+          the PR without merging it.
+        </p>
+        {% else %}
+        <p>
+          Add <code>GITHUB_DASHBOARD_TOKEN</code> and <code>GITHUB_REPOSITORY</code> app settings to enable this page.
+        </p>
+        {% endif %}
+      </section>
+
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Open pull requests</p>
+            <h2>Branch review queue</h2>
+          </div>
+        </div>
+
+        {% if github_configured and pull_requests %}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>PR</th>
+                <th>Branch</th>
+                <th>Author</th>
+                <th>Updated</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for pr in pull_requests %}
+              <tr>
+                <td>
+                  <strong>#{{ pr.number }} {{ pr.title }}</strong><br />
+                  <a href="{{ pr.html_url }}" target="_blank" rel="noreferrer">Open in GitHub</a>
+                  {% if pr.draft %}<span class="chip chip-muted">Draft</span>{% endif %}
+                </td>
+                <td><code>{{ pr.branch }}</code> → <code>{{ pr.base_branch }}</code></td>
+                <td>{{ pr.author }}</td>
+                <td>{{ pr.updated_at }}</td>
+                <td>
+                  <form method="post" action="/admin/github/approve" class="inline-form">
+                    <input type="hidden" name="pr_number" value="{{ pr.number }}" />
+                    <input type="hidden" name="head_sha" value="{{ pr.head_sha }}" />
+                    <label class="checkbox-row">
+                      <input type="checkbox" name="deploy_qa" value="true" {% if deploy_qa_default %}checked{% endif %} />
+                      Also deploy QA
+                    </label>
+                    <button class="btn compact-btn" type="submit">Accept</button>
+                  </form>
+                  <form method="post" action="/admin/github/reject" class="inline-form">
+                    <input type="hidden" name="pr_number" value="{{ pr.number }}" />
+                    <button class="btn danger compact-btn" type="submit">Deny</button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% elif github_configured %}
+        <p>No open pull requests are waiting right now.</p>
+        {% else %}
+        <p>GitHub integration is not configured yet, so no pull requests can be loaded.</p>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>
