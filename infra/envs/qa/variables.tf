@@ -39,7 +39,8 @@ variable "container_port" {
 }
 
 variable "allowed_client_cidr" {
-  type = string
+  type    = string
+  default = "174.165.209.210/32"
 }
 
 variable "contoso_device_connection_string" {

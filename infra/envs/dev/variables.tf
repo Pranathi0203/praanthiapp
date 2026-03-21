@@ -14,7 +14,7 @@ variable "image_tag" { type = string }
 variable "container_port" { type = number }
 variable "allowed_client_cidr" {
   type    = string
-  default = "50.54.243.250/32"
+  default = "174.165.209.210/32"
 }
 variable "contoso_device_connection_string" {
   type      = string
