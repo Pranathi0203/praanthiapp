@@ -89,6 +89,10 @@ locals {
   optional_app_insights_settings = var.application_insights_connection_string != "" ? {
     "APPLICATIONINSIGHTS_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.application_insights_connection_string[0].versionless_id})"
   } : {}
+  optional_github_dashboard_settings = var.github_dashboard_token != "" ? {
+    "GITHUB_DASHBOARD_TOKEN" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.github_dashboard_token[0].versionless_id})"
+    "GITHUB_REPOSITORY"      = "Pranathi0203/praanthiapp"
+  } : {}
   function_app_settings = merge(
     {
       "AzureWebJobsStorage"      = azurerm_storage_account.function.primary_connection_string
@@ -273,6 +277,7 @@ resource "azurerm_linux_web_app" "app" {
     local.optional_app_settings,
     local.optional_litware_app_settings,
     local.optional_app_insights_settings,
+    local.optional_github_dashboard_settings,
     var.app_settings
   )
 }
@@ -318,6 +323,7 @@ resource "azurerm_linux_web_app_slot" "staging" {
     local.optional_app_settings,
     local.optional_litware_app_settings,
     local.optional_app_insights_settings,
+    local.optional_github_dashboard_settings,
     var.app_settings,
     { "ENV" = "${var.env_name}-staging" }
   )
@@ -538,6 +544,14 @@ resource "azurerm_key_vault_secret" "application_insights_connection_string" {
   count        = var.application_insights_connection_string != "" ? 1 : 0
   name         = "applicationinsights-connection-string"
   value        = var.application_insights_connection_string
+  key_vault_id = azurerm_key_vault.app.id
+  depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
+}
+
+resource "azurerm_key_vault_secret" "github_dashboard_token" {
+  count        = var.github_dashboard_token != "" ? 1 : 0
+  name         = "github-dashboard-token"
+  value        = var.github_dashboard_token
   key_vault_id = azurerm_key_vault.app.id
   depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
 }

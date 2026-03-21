@@ -49,6 +49,7 @@ jobs:
       TF_VAR_litware_device_connection_string: ${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}
       TF_VAR_iothub_eventhub_connection_string: ${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}
       TF_VAR_application_insights_connection_string: ${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}
+      TF_VAR_github_dashboard_token: ${{ secrets.DASHBOARD_GH_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
@@ -179,6 +180,7 @@ jobs:
           import_secret_if_needed 'module.app.azurerm_key_vault_secret.litware_device_connection_string[0]' 'litware-device-connection-string'
           import_secret_if_needed 'module.app.azurerm_key_vault_secret.iothub_eventhub_connection_string[0]' 'iothub-eventhub-connection-string'
           import_secret_if_needed 'module.app.azurerm_key_vault_secret.application_insights_connection_string[0]' 'applicationinsights-connection-string'
+          import_secret_if_needed 'module.app.azurerm_key_vault_secret.github_dashboard_token[0]' 'github-dashboard-token'
 
       - name: Terraform apply
         working-directory: infra/envs/${{ inputs.environment }}
@@ -203,4 +205,5 @@ jobs:
             -var="contoso_device_connection_string=${{ secrets.CONTOSO_DEVICE_CONNECTION_STRING }}" \
             -var="litware_device_connection_string=${{ secrets.LITWARE_DEVICE_CONNECTION_STRING }}" \
             -var="iothub_eventhub_connection_string=${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}" \
-            -var="application_insights_connection_string=${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}"
+            -var="application_insights_connection_string=${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}" \
+            -var="github_dashboard_token=${{ secrets.DASHBOARD_GH_TOKEN }}"

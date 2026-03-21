@@ -24,6 +24,7 @@ module "app" {
   litware_device_connection_string = var.litware_device_connection_string
   iothub_eventhub_connection_string = var.iothub_eventhub_connection_string
   application_insights_connection_string = var.application_insights_connection_string
+  github_dashboard_token = var.github_dashboard_token
 }
 
 output "webapp_url" { value = module.app.webapp_url }

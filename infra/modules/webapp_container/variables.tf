@@ -158,3 +158,9 @@ variable "application_insights_connection_string" {
   default   = ""
   sensitive = true
 }
+
+variable "github_dashboard_token" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
