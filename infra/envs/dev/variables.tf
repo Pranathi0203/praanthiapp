@@ -32,3 +32,8 @@ variable "application_insights_connection_string" {
   type      = string
   sensitive = true
 }
+variable "github_dashboard_token" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
