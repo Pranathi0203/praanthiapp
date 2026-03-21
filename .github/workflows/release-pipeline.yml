@@ -6,6 +6,11 @@ on:
       image_tag:
         description: Image tag already pushed to ACR
         required: true
+      run_infra:
+        description: Run Terraform provisioning before deployment
+        type: boolean
+        required: true
+        default: false
       deploy_qa:
         description: Continue from dev to qa
         type: boolean
@@ -41,6 +46,7 @@ jobs:
 
   infra_dev:
     needs: prepare
+    if: ${{ inputs.run_infra }}
     runs-on: ubuntu-latest
     environment: dev
     env:
@@ -212,8 +218,16 @@ jobs:
             -var="iothub_eventhub_connection_string=${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}" \
             -var="application_insights_connection_string=${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}"
 
+  infra_dev_gate:
+    needs: [prepare, infra_dev]
+    if: ${{ always() && (needs.infra_dev.result == 'success' || needs.infra_dev.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Continue after optional infra apply
+        run: echo "Infra gate passed"
+
   migrate_dev:
-    needs: infra_dev
+    needs: infra_dev_gate
     runs-on: ubuntu-latest
     environment: dev
     env:
@@ -309,7 +323,7 @@ jobs:
 
   infra_qa:
     needs: [prepare, deploy_dev]
-    if: ${{ inputs.deploy_qa }}
+    if: ${{ inputs.deploy_qa && inputs.run_infra }}
     runs-on: ubuntu-latest
     environment: qa
     env:
@@ -445,8 +459,16 @@ jobs:
             -var="iothub_eventhub_connection_string=${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}" \
             -var="application_insights_connection_string=${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}"
 
+  infra_qa_gate:
+    needs: [prepare, deploy_dev, infra_qa]
+    if: ${{ always() && inputs.deploy_qa && (needs.infra_qa.result == 'success' || needs.infra_qa.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Continue after optional QA infra apply
+        run: echo "QA infra gate passed"
+
   migrate_qa:
-    needs: infra_qa
+    needs: infra_qa_gate
     if: ${{ inputs.deploy_qa }}
     runs-on: ubuntu-latest
     environment: qa
