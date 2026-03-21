@@ -2,8 +2,12 @@ import hashlib
 import json
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timezone
+from urllib import error as urllib_error
+from urllib import parse as urllib_parse
+from urllib import request as urllib_request
 from urllib.parse import urlparse, urlunparse
 
 import psycopg
@@ -46,6 +50,12 @@ TENANT_CONNECTION_CACHE_TTL_SECONDS = int(os.getenv("TENANT_CONNECTION_CACHE_TTL
 CONTOSO_DEVICE_CONNECTION_STRING = os.getenv("CONTOSO_DEVICE_CONNECTION_STRING", "")
 LITWARE_DEVICE_CONNECTION_STRING = os.getenv("LITWARE_DEVICE_CONNECTION_STRING", "")
 SESSION_HTTPS_ONLY = os.getenv("SESSION_HTTPS_ONLY", "true").lower() == "true"
+GITHUB_API_URL = os.getenv("GITHUB_API_URL", "https://api.github.com").rstrip("/")
+GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", "Pranathi0203/praanthiapp")
+GITHUB_DASHBOARD_TOKEN = os.getenv("GITHUB_DASHBOARD_TOKEN", "")
+GITHUB_DEPLOY_QA_DEFAULT = os.getenv("GITHUB_DEPLOY_QA_DEFAULT", "false").lower() == "true"
+GITHUB_CI_WORKFLOW = os.getenv("GITHUB_CI_WORKFLOW", "ci-build.yml")
+GITHUB_RELEASE_WORKFLOW = os.getenv("GITHUB_RELEASE_WORKFLOW", "release-pipeline.yml")
 
 app = FastAPI(title="Pranathi App")
 app.add_middleware(
@@ -317,6 +327,225 @@ class MobileCredentials(BaseModel):
 
 class MobilePunchRequest(BaseModel):
     action: str
+
+
+def is_github_dashboard_configured() -> bool:
+    return bool(GITHUB_DASHBOARD_TOKEN and "/" in GITHUB_REPOSITORY)
+
+
+def parse_iso_datetime(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def get_github_repo_parts() -> tuple[str, str]:
+    if "/" not in GITHUB_REPOSITORY:
+        raise RuntimeError("GITHUB_REPOSITORY must use owner/repo format.")
+    owner, repo = GITHUB_REPOSITORY.split("/", 1)
+    return owner, repo
+
+
+def github_api_request(
+    method: str,
+    path: str,
+    *,
+    query: dict | None = None,
+    payload: dict | None = None,
+    expected_statuses: tuple[int, ...] = (200,),
+) -> dict | list | None:
+    if not is_github_dashboard_configured():
+        raise RuntimeError("GitHub dashboard integration is not configured.")
+
+    url = f"{GITHUB_API_URL}{path}"
+    if query:
+        url = f"{url}?{urllib_parse.urlencode(query)}"
+
+    body = None
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {GITHUB_DASHBOARD_TOKEN}",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "pranathi-admin-dashboard",
+    }
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    request = urllib_request.Request(url, data=body, method=method, headers=headers)
+
+    try:
+        with urllib_request.urlopen(request, timeout=30) as response:
+            status = response.getcode()
+            raw = response.read().decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        raw = exc.read().decode("utf-8")
+        detail = raw
+        try:
+            detail = json.loads(raw).get("message", raw)
+        except json.JSONDecodeError:
+            pass
+        raise RuntimeError(f"GitHub API request failed ({exc.code}): {detail}") from exc
+    except urllib_error.URLError as exc:
+        raise RuntimeError(f"GitHub API request failed: {exc.reason}") from exc
+
+    if status not in expected_statuses:
+        raise RuntimeError(f"GitHub API request returned unexpected status {status}.")
+
+    if not raw:
+        return None
+
+    return json.loads(raw)
+
+
+def load_open_pull_requests() -> list[dict]:
+    owner, repo = get_github_repo_parts()
+    data = github_api_request(
+        "GET",
+        f"/repos/{owner}/{repo}/pulls",
+        query={"state": "open", "sort": "updated", "direction": "desc", "per_page": 25},
+    )
+    pulls = []
+    for item in data or []:
+        pulls.append(
+            {
+                "number": item["number"],
+                "title": item["title"],
+                "author": (item.get("user") or {}).get("login", "unknown"),
+                "branch": (item.get("head") or {}).get("ref", ""),
+                "head_sha": (item.get("head") or {}).get("sha", ""),
+                "base_branch": (item.get("base") or {}).get("ref", ""),
+                "updated_at": item.get("updated_at"),
+                "html_url": item.get("html_url"),
+                "draft": item.get("draft", False),
+            }
+        )
+    return pulls
+
+
+def merge_pull_request(pr_number: int, head_sha: str) -> str:
+    owner, repo = get_github_repo_parts()
+    response = github_api_request(
+        "PUT",
+        f"/repos/{owner}/{repo}/pulls/{pr_number}/merge",
+        payload={
+            "sha": head_sha,
+            "merge_method": "merge",
+            "commit_title": f"Merge pull request #{pr_number} via admin dashboard",
+        },
+        expected_statuses=(200, 201),
+    )
+    merge_sha = (response or {}).get("sha")
+    if not merge_sha:
+        raise RuntimeError("GitHub merged the pull request but did not return a merge commit SHA.")
+    return merge_sha
+
+
+def close_pull_request(pr_number: int):
+    owner, repo = get_github_repo_parts()
+    github_api_request(
+        "PATCH",
+        f"/repos/{owner}/{repo}/pulls/{pr_number}",
+        payload={"state": "closed"},
+        expected_statuses=(200,),
+    )
+
+
+def trigger_github_workflow(workflow_name: str, ref: str, inputs: dict | None = None):
+    owner, repo = get_github_repo_parts()
+    github_api_request(
+        "POST",
+        f"/repos/{owner}/{repo}/actions/workflows/{workflow_name}/dispatches",
+        payload={"ref": ref, "inputs": inputs or {}},
+        expected_statuses=(204,),
+    )
+
+
+def wait_for_workflow_run(
+    workflow_name: str,
+    *,
+    head_sha: str,
+    event: str,
+    created_after: str,
+    timeout_seconds: int = 420,
+    poll_interval_seconds: int = 5,
+) -> dict:
+    owner, repo = get_github_repo_parts()
+    created_after_dt = parse_iso_datetime(created_after)
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        data = github_api_request(
+            "GET",
+            f"/repos/{owner}/{repo}/actions/workflows/{workflow_name}/runs",
+            query={"event": event, "per_page": 20},
+        )
+        for run in (data or {}).get("workflow_runs", []):
+            if run.get("head_sha") != head_sha:
+                continue
+            created_at = run.get("created_at")
+            if not created_at or parse_iso_datetime(created_at) < created_after_dt:
+                continue
+            return {
+                "id": run.get("id"),
+                "status": run.get("status"),
+                "conclusion": run.get("conclusion"),
+                "html_url": run.get("html_url"),
+            }
+        time.sleep(poll_interval_seconds)
+    raise RuntimeError(f"Timed out waiting for workflow {workflow_name} to start.")
+
+
+def wait_for_workflow_completion(
+    workflow_name: str,
+    *,
+    run_id: int,
+    timeout_seconds: int = 900,
+    poll_interval_seconds: int = 10,
+) -> dict:
+    owner, repo = get_github_repo_parts()
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        run = github_api_request(
+            "GET",
+            f"/repos/{owner}/{repo}/actions/runs/{run_id}",
+            expected_statuses=(200,),
+        )
+        if (run or {}).get("status") == "completed":
+            return {
+                "id": run.get("id"),
+                "status": run.get("status"),
+                "conclusion": run.get("conclusion"),
+                "html_url": run.get("html_url"),
+            }
+        time.sleep(poll_interval_seconds)
+    raise RuntimeError(f"Timed out waiting for workflow {workflow_name} to finish.")
+
+
+def load_github_dashboard_context(request: Request, msg: str = "", error: str = ""):
+    session_admin = require_admin_session(request)
+    if not session_admin:
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    pulls = []
+    github_error = error
+    if is_github_dashboard_configured():
+        try:
+            pulls = load_open_pull_requests()
+        except Exception as exc:
+            record_exception_to_telemetry(exc)
+            github_error = str(exc)
+
+    return templates.TemplateResponse(
+        "admin_github.html",
+        {
+            "request": request,
+            "admin_email": session_admin["email"],
+            "msg": msg,
+            "error": github_error,
+            "pull_requests": pulls,
+            "github_repository": GITHUB_REPOSITORY,
+            "github_configured": is_github_dashboard_configured(),
+            "deploy_qa_default": GITHUB_DEPLOY_QA_DEFAULT,
+        },
+    )
 
 
 def authenticate_employee(email: str, password: str) -> dict:
@@ -599,6 +828,7 @@ def load_admin_dashboard_context(request: Request, msg: str = "", error: str = "
             "stats": stats,
             "msg": msg,
             "error": error,
+            "github_configured": is_github_dashboard_configured(),
         },
     )
 
@@ -687,6 +917,98 @@ def admin_login(request: Request, email: str = Form(...), password: str = Form(.
 @app.get("/admin/dashboard", response_class=HTMLResponse)
 def admin_dashboard(request: Request, msg: str = "", error: str = ""):
     return load_admin_dashboard_context(request, msg=msg, error=error)
+
+
+@app.get("/admin/github", response_class=HTMLResponse)
+def admin_github_dashboard(request: Request, msg: str = "", error: str = ""):
+    return load_github_dashboard_context(request, msg=msg, error=error)
+
+
+@app.post("/admin/github/approve")
+def admin_github_approve(
+    request: Request,
+    pr_number: int = Form(...),
+    head_sha: str = Form(...),
+    deploy_qa: str = Form("false"),
+):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    if not is_github_dashboard_configured():
+        return RedirectResponse(
+            "/admin/github?error=GitHub+dashboard+integration+is+not+configured",
+            status_code=303,
+        )
+
+    deploy_qa_enabled = deploy_qa.lower() == "true"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    try:
+        merge_sha = merge_pull_request(pr_number, head_sha)
+        trigger_github_workflow(GITHUB_CI_WORKFLOW, "main")
+        ci_run = wait_for_workflow_run(
+            GITHUB_CI_WORKFLOW,
+            head_sha=merge_sha,
+            event="workflow_dispatch",
+            created_after=now_iso,
+        )
+        ci_run = wait_for_workflow_completion(GITHUB_CI_WORKFLOW, run_id=ci_run["id"])
+        if ci_run.get("conclusion") != "success":
+            raise RuntimeError(f"CI build failed. Review run: {ci_run.get('html_url')}")
+
+        release_created_after = datetime.now(timezone.utc).isoformat()
+        trigger_github_workflow(
+            GITHUB_RELEASE_WORKFLOW,
+            "main",
+            inputs={
+                "image_tag": merge_sha,
+                "deploy_qa": "true" if deploy_qa_enabled else "false",
+            },
+        )
+        release_run = wait_for_workflow_run(
+            GITHUB_RELEASE_WORKFLOW,
+            head_sha=merge_sha,
+            event="workflow_dispatch",
+            created_after=release_created_after,
+        )
+        message = (
+            f"PR #{pr_number} merged. CI passed and release run #{release_run['id']} started."
+        )
+        return RedirectResponse(
+            f"/admin/github?msg={urllib_parse.quote_plus(message)}",
+            status_code=303,
+        )
+    except Exception as exc:
+        record_exception_to_telemetry(exc)
+        return RedirectResponse(
+            f"/admin/github?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
+@app.post("/admin/github/reject")
+def admin_github_reject(request: Request, pr_number: int = Form(...)):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    if not is_github_dashboard_configured():
+        return RedirectResponse(
+            "/admin/github?error=GitHub+dashboard+integration+is+not+configured",
+            status_code=303,
+        )
+
+    try:
+        close_pull_request(pr_number)
+        return RedirectResponse(
+            f"/admin/github?msg={urllib_parse.quote_plus(f'PR #{pr_number} was closed.')}",
+            status_code=303,
+        )
+    except Exception as exc:
+        record_exception_to_telemetry(exc)
+        return RedirectResponse(
+            f"/admin/github?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
 
 
 @app.post("/attendance/punch")

@@ -43,6 +43,24 @@
           <span class="stat-label">Active tenants</span>
           <strong class="stat-value">{{ stats.tenant_count }}</strong>
         </article>
+        <article class="stat-card">
+          <span class="stat-label">GitHub approvals</span>
+          <strong class="stat-value">{{ "Ready" if github_configured else "Setup" }}</strong>
+        </article>
+      </section>
+
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">GitHub deployments</p>
+            <h2>Pull request approval queue</h2>
+          </div>
+        </div>
+        <p>
+          Review open pull requests in a separate admin tab. Approving a PR will merge it, run the CI build,
+          and then start the release workflow.
+        </p>
+        <a class="btn" href="/admin/github" target="_blank" rel="noreferrer">Open GitHub approvals</a>
       </section>
 
       <section class="dashboard-grid admin-grid">
