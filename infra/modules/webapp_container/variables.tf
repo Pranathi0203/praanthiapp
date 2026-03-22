@@ -164,3 +164,8 @@ variable "github_dashboard_token" {
   default   = ""
   sensitive = true
 }
+
+variable "log_analytics_retention_days" {
+  type    = number
+  default = 30
+}

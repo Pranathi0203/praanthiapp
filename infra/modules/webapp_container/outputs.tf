@@ -41,3 +41,11 @@ output "iothub_name" {
 output "function_app_name" {
   value = azurerm_linux_function_app.attendance.name
 }
+
+output "log_analytics_workspace_id" {
+  value = azurerm_log_analytics_workspace.observability.id
+}
+
+output "log_analytics_workspace_name" {
+  value = azurerm_log_analytics_workspace.observability.name
+}

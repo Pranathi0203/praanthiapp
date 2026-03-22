@@ -1,3 +1,4 @@
+import contextvars
 import hashlib
 import json
 import logging
@@ -5,6 +6,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -71,6 +73,38 @@ logger = logging.getLogger(__name__)
 _redis_client = None
 _tenant_iot_clients = {}
 _mobile_token_serializer = URLSafeTimedSerializer(APP_SECRET, salt="employee-mobile-auth")
+_request_id_context: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
+
+
+def _compact_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in fields.items() if value is not None and value != ""}
+
+
+def get_request_id() -> str:
+    return _request_id_context.get("")
+
+
+def get_trace_id() -> str:
+    span = trace.get_current_span()
+    if not span:
+        return ""
+    span_context = span.get_span_context()
+    if not span_context or not span_context.is_valid:
+        return ""
+    return format(span_context.trace_id, "032x")
+
+
+def log_event(level: int, event_name: str, **fields: Any):
+    payload = _compact_fields(
+        {
+            "event": event_name,
+            "environment": os.getenv("ENV", "local"),
+            "request_id": get_request_id(),
+            "trace_id": get_trace_id(),
+            **fields,
+        }
+    )
+    logger.log(level, json.dumps(payload, default=str, sort_keys=True))
 
 
 def setup_telemetry():
@@ -85,8 +119,8 @@ def setup_telemetry():
 setup_telemetry()
 
 
-def record_exception_to_telemetry(exc: Exception):
-    logger.exception("Application exception")
+def record_exception_to_telemetry(exc: Exception, **fields: Any):
+    log_event(logging.ERROR, "application_exception", error_type=type(exc).__name__, error=str(exc), **fields)
     span = trace.get_current_span()
     if span and span.is_recording():
         span.record_exception(exc)
@@ -152,6 +186,16 @@ def get_redis_client():
     return _redis_client
 
 
+def get_request_telemetry() -> dict[str, str]:
+    telemetry = _compact_fields(
+        {
+            "request_id": get_request_id(),
+            "trace_id": get_trace_id(),
+        }
+    )
+    return telemetry
+
+
 def create_mobile_token(user_email: str, organization: str) -> str:
     return _mobile_token_serializer.dumps({"email": user_email, "organization": organization})
 
@@ -181,7 +225,7 @@ def get_device_connection_string_for_org(org: str) -> str:
         try:
             cached_value = redis_client.get(cache_key)
         except Exception as exc:
-            logger.warning("Redis lookup failed for %s: %s", org, exc)
+            log_event(logging.WARNING, "redis_lookup_failed", organization=org, error=str(exc))
 
     if cached_value:
         return cached_value
@@ -199,7 +243,7 @@ def get_device_connection_string_for_org(org: str) -> str:
         try:
             redis_client.setex(cache_key, TENANT_CONNECTION_CACHE_TTL_SECONDS, connection_string)
         except Exception as exc:
-            logger.warning("Redis cache write failed for %s: %s", org, exc)
+            log_event(logging.WARNING, "redis_cache_write_failed", organization=org, error=str(exc))
 
     return connection_string
 
@@ -220,7 +264,21 @@ def get_iot_client_for_org(org: str):
 
 def publish_attendance_event(org: str, payload: dict):
     client = get_iot_client_for_org(org)
+    log_event(
+        logging.INFO,
+        "attendance_event_publish_started",
+        organization=org,
+        event_id=payload.get("event_id"),
+        source=payload.get("source"),
+    )
     client.send_message(json.dumps(payload))
+    log_event(
+        logging.INFO,
+        "attendance_event_publish_completed",
+        organization=org,
+        event_id=payload.get("event_id"),
+        source=payload.get("source"),
+    )
 
 
 def ensure_schema(db_url: str):
@@ -299,7 +357,16 @@ def record_auth_event(
                 )
             conn.commit()
     except Exception as exc:
-        logger.warning("Auth event could not be recorded for %s: %s", user_email, exc)
+        log_event(
+            logging.WARNING,
+            "auth_event_record_failed",
+            user_email=user_email,
+            organization=organization,
+            actor_type=actor_type,
+            auth_event_type=event_type,
+            source=source,
+            error=str(exc),
+        )
 
 
 def require_user_session(request: Request):
@@ -656,15 +723,111 @@ def queue_attendance_event(user_email: str, organization: str, action: str, sour
         "event_type": normalized_action,
         "requested_at": datetime.now(timezone.utc).isoformat(),
         "source": source,
+        "telemetry": get_request_telemetry(),
     }
 
     try:
         publish_attendance_event(organization, payload)
     except Exception as exc:
-        record_exception_to_telemetry(exc)
+        record_exception_to_telemetry(
+            exc,
+            organization=organization,
+            user_email=user_email,
+            event_id=payload["event_id"],
+            attendance_action=normalized_action,
+            source=source,
+        )
         raise HTTPException(status_code=502, detail="Attendance event could not be queued to IoT Hub.") from exc
 
+    log_event(
+        logging.INFO,
+        "attendance_event_queued",
+        organization=organization,
+        user_email=user_email,
+        event_id=payload["event_id"],
+        attendance_action=normalized_action,
+        source=source,
+    )
     return payload
+
+
+def check_database_health() -> dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        db_url = get_admin_db_url()
+        with get_conn(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+    except Exception as exc:
+        return {
+            "status": "unhealthy",
+            "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+            "error": str(exc),
+        }
+
+    return {
+        "status": "healthy",
+        "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+    }
+
+
+def check_redis_health() -> dict[str, Any]:
+    if not REDIS_URL:
+        return {"status": "not_configured"}
+    if redis is None:
+        return {"status": "unhealthy", "error": "redis dependency is not installed"}
+
+    started = time.perf_counter()
+    try:
+        redis_client = get_redis_client()
+        if redis_client is None:
+            return {"status": "unhealthy", "error": "redis client could not be created"}
+        redis_client.ping()
+    except Exception as exc:
+        return {
+            "status": "unhealthy",
+            "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+            "error": str(exc),
+        }
+
+    return {
+        "status": "healthy",
+        "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+    }
+
+
+def check_iot_health() -> dict[str, Any]:
+    orgs = {
+        "contoso": bool(CONTOSO_DEVICE_CONNECTION_STRING),
+        "litware": bool(LITWARE_DEVICE_CONNECTION_STRING),
+    }
+    missing_orgs = [org for org, configured in orgs.items() if not configured]
+    if len(missing_orgs) == len(orgs):
+        return {"status": "not_configured"}
+    if missing_orgs:
+        return {"status": "degraded", "missing_organizations": missing_orgs}
+    return {"status": "healthy"}
+
+
+def build_health_payload() -> tuple[dict[str, Any], int]:
+    checks = {
+        "database": check_database_health(),
+        "redis": check_redis_health(),
+        "iot": check_iot_health(),
+        "telemetry": {"status": "healthy" if APPINSIGHTS_CONNECTION_STRING else "not_configured"},
+    }
+    unhealthy_checks = [name for name, result in checks.items() if result["status"] == "unhealthy"]
+    overall_status = "healthy" if not unhealthy_checks else "unhealthy"
+    status_code = 200 if overall_status == "healthy" else 503
+    payload = {
+        "status": overall_status,
+        "environment": os.getenv("ENV", "local"),
+        "request_id": get_request_id(),
+        "trace_id": get_trace_id(),
+        "checks": checks,
+    }
+    return payload, status_code
 
 
 def get_mobile_user_from_header(authorization: str | None) -> dict:
@@ -843,9 +1006,50 @@ def home(request: Request, msg: str = ""):
     )
 
 
+@app.middleware("http")
+async def add_request_context(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    token = _request_id_context.set(request_id)
+    request.state.request_id = request_id
+    started = time.perf_counter()
+    path = request.url.path
+    method = request.method
+
+    log_event(logging.INFO, "http_request_started", method=method, path=path)
+
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, method=method, path=path)
+        _request_id_context.reset(token)
+        raise
+
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    response.headers["X-Request-ID"] = request_id
+    level = logging.INFO if response.status_code < 500 else logging.ERROR
+    log_event(
+        level,
+        "http_request_completed",
+        method=method,
+        path=path,
+        status_code=response.status_code,
+        duration_ms=duration_ms,
+    )
+    _request_id_context.reset(token)
+    return response
+
+
+@app.get("/health/live")
+def liveness():
+    return {"status": "healthy", "environment": os.getenv("ENV", "local")}
+
+
 @app.get("/health")
 def health():
-    return {"status": "healthy"}
+    payload, status_code = build_health_payload()
+    log_level = logging.INFO if status_code == 200 else logging.ERROR
+    log_event(log_level, "health_check_completed", overall_status=payload["status"], checks=payload["checks"])
+    return JSONResponse(payload, status_code=status_code)
 
 
 @app.get("/hello/{name}")
@@ -907,9 +1111,11 @@ def admin_login_page(request: Request, msg: str = ""):
 def admin_login(request: Request, email: str = Form(...), password: str = Form(...)):
     normalized = email.lower().strip()
     if normalized != ADMIN_EMAIL or hash_password(password) != hash_password(ADMIN_PASSWORD):
+        log_event(logging.WARNING, "admin_login_failed", user_email=normalized)
         return RedirectResponse("/admin/login?msg=Invalid+admin+credentials", status_code=303)
 
     request.session["admin"] = {"email": normalized}
+    log_event(logging.INFO, "admin_login_succeeded", user_email=normalized)
     record_auth_event(normalized, "admin", "login", actor_type="admin")
     return RedirectResponse("/admin/dashboard?msg=Admin+session+started", status_code=303)
 
@@ -1025,6 +1231,7 @@ def logout(request: Request):
     if session_admin:
         record_auth_event(session_admin["email"], "admin", "logout", actor_type="admin")
     request.session.clear()
+    log_event(logging.INFO, "session_logout_completed")
     return RedirectResponse("/", status_code=303)
 
 
@@ -1050,6 +1257,12 @@ def admin_logout(request: Request):
 def mobile_signup(payload: MobileCredentials):
     employee = create_employee_account(payload.email, payload.password)
     token = create_mobile_token(employee["email"], employee["organization"])
+    log_event(
+        logging.INFO,
+        "mobile_signup_succeeded",
+        user_email=employee["email"],
+        organization=employee["organization"],
+    )
     record_auth_event(employee["email"], employee["organization"], "signup", source="mobile-app")
     record_auth_event(employee["email"], employee["organization"], "login", source="mobile-app")
     return JSONResponse(
@@ -1065,6 +1278,12 @@ def mobile_signup(payload: MobileCredentials):
 def mobile_login(payload: MobileCredentials):
     employee = authenticate_employee(payload.email, payload.password)
     token = create_mobile_token(employee["email"], employee["organization"])
+    log_event(
+        logging.INFO,
+        "mobile_login_succeeded",
+        user_email=employee["email"],
+        organization=employee["organization"],
+    )
     record_auth_event(employee["email"], employee["organization"], "login", source="mobile-app")
     return JSONResponse(
         {
@@ -1096,6 +1315,14 @@ def mobile_attendance_punch(payload: MobilePunchRequest, authorization: str | No
         employee["organization"],
         payload.action,
         source="mobile-app",
+    )
+    log_event(
+        logging.INFO,
+        "mobile_attendance_punch_accepted",
+        user_email=employee["email"],
+        organization=employee["organization"],
+        event_id=event["event_id"],
+        attendance_action=event["event_type"],
     )
     return JSONResponse(
         {
