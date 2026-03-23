@@ -1,14 +1,28 @@
+import contextvars
 import hashlib
 import json
 import logging
 import os
+import subprocess
 import time
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 from urllib.parse import urlparse, urlunparse
+
+DD_TRACE_ENABLED = os.getenv("DD_TRACE_ENABLED", "false").lower() == "true"
+
+if DD_TRACE_ENABLED:
+    try:
+        import ddtrace.auto  # noqa: F401
+        from ddtrace import tracer as dd_tracer
+    except ImportError:  # pragma: no cover - optional until Datadog is configured
+        dd_tracer = None
+else:  # pragma: no cover - exercised via env var in deployed environments
+    dd_tracer = None
 
 import psycopg
 from azure.monitor.opentelemetry import configure_azure_monitor
@@ -56,6 +70,19 @@ GITHUB_DASHBOARD_TOKEN = os.getenv("GITHUB_DASHBOARD_TOKEN", "")
 GITHUB_DEPLOY_QA_DEFAULT = os.getenv("GITHUB_DEPLOY_QA_DEFAULT", "false").lower() == "true"
 GITHUB_CI_WORKFLOW = os.getenv("GITHUB_CI_WORKFLOW", "ci-build.yml")
 GITHUB_RELEASE_WORKFLOW = os.getenv("GITHUB_RELEASE_WORKFLOW", "release-pipeline.yml")
+POSTGRES_ADMIN_URL = os.getenv("POSTGRES_ADMIN_URL", "")
+POSTGRES_ADMIN_DB = os.getenv("POSTGRES_ADMIN_DB", "postgres")
+AZURE_SUBSCRIPTION_ID = os.getenv("AZURE_SUBSCRIPTION_ID", "")
+AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP", "")
+AZURE_POSTGRES_SERVER_NAME = os.getenv("AZURE_POSTGRES_SERVER_NAME", "")
+AZURE_USE_MANAGED_IDENTITY = os.getenv("AZURE_USE_MANAGED_IDENTITY", "true").lower() == "true"
+POWERSHELL_EXECUTABLE = os.getenv("POWERSHELL_EXECUTABLE", "pwsh")
+POSTGRES_PLATFORM_ACTION_TIMEOUT_SECONDS = int(
+    os.getenv("POSTGRES_PLATFORM_ACTION_TIMEOUT_SECONDS", "1800")
+)
+DATADOG_SERVICE = os.getenv("DD_SERVICE", "pranathi-app")
+DATADOG_ENV = os.getenv("DD_ENV", os.getenv("ENV", "local"))
+DATADOG_VERSION = os.getenv("DD_VERSION", "")
 
 app = FastAPI(title="Pranathi App")
 app.add_middleware(
@@ -67,13 +94,78 @@ app.add_middleware(
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 logger = logging.getLogger(__name__)
+POSTGRES_ADMIN_SCRIPT_CANDIDATES = [
+    os.path.join(BASE_DIR, "scripts", "postgres_admin.ps1"),
+    os.path.join(os.path.dirname(BASE_DIR), "scripts", "postgres_admin.ps1"),
+]
 
 _redis_client = None
 _tenant_iot_clients = {}
 _mobile_token_serializer = URLSafeTimedSerializer(APP_SECRET, salt="employee-mobile-auth")
+_request_id_context: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
+
+
+def _compact_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in fields.items() if value is not None and value != ""}
+
+
+def get_request_id() -> str:
+    return _request_id_context.get("")
+
+
+def get_trace_id() -> str:
+    span = trace.get_current_span()
+    if not span:
+        return get_datadog_trace_id()
+    span_context = span.get_span_context()
+    if not span_context or not span_context.is_valid:
+        return get_datadog_trace_id()
+    return format(span_context.trace_id, "032x")
+
+
+def get_datadog_log_context() -> dict[str, str]:
+    if dd_tracer is None:
+        return {}
+    try:
+        return {key: str(value) for key, value in dd_tracer.get_log_correlation_context().items() if value}
+    except Exception:  # pragma: no cover - defensive for telemetry integrations
+        return {}
+
+
+def get_datadog_trace_id() -> str:
+    datadog_context = get_datadog_log_context()
+    return datadog_context.get("dd.trace_id", "")
+
+
+def log_event(level: int, event_name: str, **fields: Any):
+    payload = _compact_fields(
+        {
+            "event": event_name,
+            "environment": os.getenv("ENV", "local"),
+            "request_id": get_request_id(),
+            "trace_id": get_trace_id(),
+            "service": DATADOG_SERVICE,
+            "service_version": DATADOG_VERSION,
+            **fields,
+            **get_datadog_log_context(),
+        }
+    )
+    logger.log(level, json.dumps(payload, default=str, sort_keys=True))
 
 
 def setup_telemetry():
+    if DD_TRACE_ENABLED:
+        if dd_tracer is None:
+            logger.warning("DD_TRACE_ENABLED is true but ddtrace is not installed.")
+            return
+        logger.info(
+            "Datadog tracing enabled for service=%s env=%s version=%s",
+            DATADOG_SERVICE,
+            DATADOG_ENV,
+            DATADOG_VERSION or "unset",
+        )
+        return
+
     if not APPINSIGHTS_CONNECTION_STRING:
         logger.warning("Application Insights connection string not set.")
         return
@@ -85,8 +177,8 @@ def setup_telemetry():
 setup_telemetry()
 
 
-def record_exception_to_telemetry(exc: Exception):
-    logger.exception("Application exception")
+def record_exception_to_telemetry(exc: Exception, **fields: Any):
+    log_event(logging.ERROR, "application_exception", error_type=type(exc).__name__, error=str(exc), **fields)
     span = trace.get_current_span()
     if span and span.is_recording():
         span.record_exception(exc)
@@ -130,8 +222,87 @@ def get_admin_db_url() -> str:
     raise RuntimeError("Shared admin database URL is not configured")
 
 
-def get_conn(db_url: str):
-    return psycopg.connect(db_url)
+def get_postgres_admin_url() -> str:
+    if POSTGRES_ADMIN_URL:
+        return POSTGRES_ADMIN_URL
+    if DATABASE_URL:
+        return with_database_name(DATABASE_URL, POSTGRES_ADMIN_DB)
+    raise RuntimeError("PostgreSQL admin connection is not configured")
+
+
+def get_conn(db_url: str, *, autocommit: bool = False):
+    return psycopg.connect(db_url, autocommit=autocommit)
+
+
+def is_postgres_platform_configured() -> bool:
+    return bool(AZURE_SUBSCRIPTION_ID and AZURE_RESOURCE_GROUP and AZURE_POSTGRES_SERVER_NAME)
+
+
+def get_postgres_admin_script_path() -> str:
+    for candidate in POSTGRES_ADMIN_SCRIPT_CANDIDATES:
+        if os.path.exists(candidate):
+            return candidate
+    return POSTGRES_ADMIN_SCRIPT_CANDIDATES[0]
+
+
+def run_postgres_platform_action(action: str, **kwargs: str) -> dict | list:
+    if not is_postgres_platform_configured():
+        raise RuntimeError("Azure PostgreSQL platform actions are not configured.")
+    script_path = get_postgres_admin_script_path()
+    if not os.path.exists(script_path):
+        raise RuntimeError(f"PostgreSQL admin script not found at {script_path}.")
+
+    command = [
+        POWERSHELL_EXECUTABLE,
+        "-NoLogo",
+        "-NoProfile",
+        "-File",
+        script_path,
+        "-Action",
+        action,
+        "-SubscriptionId",
+        AZURE_SUBSCRIPTION_ID,
+        "-ResourceGroup",
+        AZURE_RESOURCE_GROUP,
+        "-ServerName",
+        AZURE_POSTGRES_SERVER_NAME,
+        "-UseManagedIdentity",
+        "$true" if AZURE_USE_MANAGED_IDENTITY else "$false",
+    ]
+
+    for key, value in kwargs.items():
+        if value is None or value == "":
+            continue
+        command.extend([f"-{key}", str(value)])
+
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=POSTGRES_PLATFORM_ACTION_TIMEOUT_SECONDS,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"{POWERSHELL_EXECUTABLE} is not installed in the web app container."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Azure PostgreSQL action timed out after {exc.timeout} seconds.") from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        stdout = (exc.stdout or "").strip()
+        detail = stderr or stdout or "Unknown PowerShell execution failure."
+        raise RuntimeError(detail) from exc
+
+    raw = (completed.stdout or "").strip()
+    if not raw:
+        return {}
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"PowerShell script returned non-JSON output: {raw}") from exc
 
 
 def hash_password(password: str) -> str:
@@ -150,6 +321,16 @@ def get_redis_client():
 
     _redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
     return _redis_client
+
+
+def get_request_telemetry() -> dict[str, str]:
+    telemetry = _compact_fields(
+        {
+            "request_id": get_request_id(),
+            "trace_id": get_trace_id(),
+        }
+    )
+    return telemetry
 
 
 def create_mobile_token(user_email: str, organization: str) -> str:
@@ -181,7 +362,7 @@ def get_device_connection_string_for_org(org: str) -> str:
         try:
             cached_value = redis_client.get(cache_key)
         except Exception as exc:
-            logger.warning("Redis lookup failed for %s: %s", org, exc)
+            log_event(logging.WARNING, "redis_lookup_failed", organization=org, error=str(exc))
 
     if cached_value:
         return cached_value
@@ -199,7 +380,7 @@ def get_device_connection_string_for_org(org: str) -> str:
         try:
             redis_client.setex(cache_key, TENANT_CONNECTION_CACHE_TTL_SECONDS, connection_string)
         except Exception as exc:
-            logger.warning("Redis cache write failed for %s: %s", org, exc)
+            log_event(logging.WARNING, "redis_cache_write_failed", organization=org, error=str(exc))
 
     return connection_string
 
@@ -220,7 +401,21 @@ def get_iot_client_for_org(org: str):
 
 def publish_attendance_event(org: str, payload: dict):
     client = get_iot_client_for_org(org)
+    log_event(
+        logging.INFO,
+        "attendance_event_publish_started",
+        organization=org,
+        event_id=payload.get("event_id"),
+        source=payload.get("source"),
+    )
     client.send_message(json.dumps(payload))
+    log_event(
+        logging.INFO,
+        "attendance_event_publish_completed",
+        organization=org,
+        event_id=payload.get("event_id"),
+        source=payload.get("source"),
+    )
 
 
 def ensure_schema(db_url: str):
@@ -299,7 +494,16 @@ def record_auth_event(
                 )
             conn.commit()
     except Exception as exc:
-        logger.warning("Auth event could not be recorded for %s: %s", user_email, exc)
+        log_event(
+            logging.WARNING,
+            "auth_event_record_failed",
+            user_email=user_email,
+            organization=organization,
+            actor_type=actor_type,
+            auth_event_type=event_type,
+            source=source,
+            error=str(exc),
+        )
 
 
 def require_user_session(request: Request):
@@ -318,6 +522,199 @@ def require_admin_session(request: Request):
     if not session_admin.get("email"):
         return None
     return session_admin
+
+
+def extract_database_name(db_url: str) -> str:
+    parsed = urlparse(db_url)
+    return parsed.path.lstrip("/")
+
+
+def get_managed_database_entries() -> list[dict[str, str | bool]]:
+    entries: list[dict[str, str | bool]] = []
+
+    try:
+        admin_db_url = get_admin_db_url()
+        admin_database_name = extract_database_name(admin_db_url)
+        if admin_database_name:
+            entries.append(
+                {
+                    "key": "admin",
+                    "label": "Shared admin database",
+                    "database_name": admin_database_name,
+                    "db_url": admin_db_url,
+                    "organization": "admin",
+                    "can_delete": False,
+                    "can_restore": False,
+                }
+            )
+    except Exception:
+        pass
+
+    for org in ("contoso", "litware"):
+        try:
+            db_url = get_db_url_for_org(org)
+        except Exception:
+            continue
+
+        database_name = extract_database_name(db_url)
+        if not database_name:
+            continue
+
+        entries.append(
+            {
+                "key": org,
+                "label": f"{org.title()} tenant database",
+                "database_name": database_name,
+                "db_url": db_url,
+                "organization": org,
+                "can_delete": True,
+                "can_restore": True,
+            }
+        )
+
+    return entries
+
+
+def get_managed_database_entry(database_key: str) -> dict[str, str | bool]:
+    for entry in get_managed_database_entries():
+        if entry["key"] == database_key:
+            return entry
+    raise RuntimeError(f"Unknown managed database: {database_key}")
+
+
+def load_database_dashboard_context(request: Request, msg: str = "", error: str = ""):
+    session_admin = require_admin_session(request)
+    if not session_admin:
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        managed_entries = get_managed_database_entries()
+    except Exception as exc:
+        managed_entries = []
+        error = error or str(exc)
+
+    server = {
+        "configured": is_postgres_platform_configured(),
+        "resource_group": AZURE_RESOURCE_GROUP,
+        "server_name": AZURE_POSTGRES_SERVER_NAME,
+        "subscription_id": AZURE_SUBSCRIPTION_ID,
+        "status": "Unavailable",
+        "sku": "",
+        "version": "",
+        "storage_mb": "",
+        "backup_retention_days": "",
+        "ha_state": "",
+        "fqdn": "",
+        "error": "",
+    }
+    backups = []
+
+    if server["configured"]:
+        try:
+            server_payload = run_postgres_platform_action("show-server")
+            if isinstance(server_payload, dict):
+                server["status"] = server_payload.get("state", "Unknown")
+                server["sku"] = ((server_payload.get("sku") or {}).get("name")) or ""
+                server["version"] = server_payload.get("version", "")
+                server["storage_mb"] = server_payload.get("storage", {}).get("storageSizeGb", "")
+                server["backup_retention_days"] = server_payload.get("backup", {}).get(
+                    "backupRetentionDays", ""
+                )
+                server["ha_state"] = (server_payload.get("highAvailability") or {}).get("state", "")
+                server["fqdn"] = server_payload.get("fullyQualifiedDomainName", "")
+        except Exception as exc:
+            server["error"] = str(exc)
+            record_exception_to_telemetry(exc, action="show_postgres_server")
+
+        try:
+            backup_payload = run_postgres_platform_action("list-backups")
+            if isinstance(backup_payload, list):
+                backups = backup_payload[:10]
+        except Exception as exc:
+            if not server["error"]:
+                server["error"] = str(exc)
+            record_exception_to_telemetry(exc, action="list_postgres_backups")
+
+    databases = []
+    for entry in managed_entries:
+        database_name = str(entry["database_name"])
+        database_info = {
+            "key": entry["key"],
+            "label": entry["label"],
+            "database_name": database_name,
+            "organization": entry["organization"],
+            "exists": False,
+            "size": "Unavailable",
+            "active_connections": 0,
+            "app_user_count": None,
+            "attendance_event_count": None,
+            "schema_ready": False,
+            "can_delete": entry["can_delete"],
+            "error": "",
+        }
+
+        try:
+            with get_conn(get_postgres_admin_url()) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (database_name,))
+                    database_info["exists"] = cur.fetchone() is not None
+
+                    if database_info["exists"]:
+                        cur.execute("SELECT pg_size_pretty(pg_database_size(%s))", (database_name,))
+                        size_row = cur.fetchone()
+                        database_info["size"] = size_row[0] if size_row and size_row[0] else "0 bytes"
+
+                        cur.execute(
+                            "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = %s",
+                            (database_name,),
+                        )
+                        connection_row = cur.fetchone()
+                        database_info["active_connections"] = (
+                            connection_row[0] if connection_row and connection_row[0] else 0
+                        )
+
+            if database_info["exists"]:
+                with get_conn(str(entry["db_url"])) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT
+                                to_regclass('public.app_users') IS NOT NULL,
+                                to_regclass('public.attendance_events') IS NOT NULL
+                            """
+                        )
+                        schema_row = cur.fetchone() or (False, False)
+                        app_users_exists, attendance_exists = schema_row
+                        database_info["schema_ready"] = bool(app_users_exists and attendance_exists)
+
+                        if app_users_exists:
+                            cur.execute("SELECT COUNT(*) FROM app_users")
+                            database_info["app_user_count"] = cur.fetchone()[0] or 0
+
+                        if attendance_exists:
+                            cur.execute("SELECT COUNT(*) FROM attendance_events")
+                            database_info["attendance_event_count"] = cur.fetchone()[0] or 0
+        except Exception as exc:
+            database_info["error"] = str(exc)
+            record_exception_to_telemetry(exc, database_name=database_name)
+
+        databases.append(database_info)
+
+    return templates.TemplateResponse(
+        request,
+        "admin_database.html",
+        {
+            "request": request,
+            "admin_email": session_admin["email"],
+            "msg": msg,
+            "error": error,
+            "server": server,
+            "backups": backups,
+            "databases": databases,
+            "postgres_admin_configured": bool(POSTGRES_ADMIN_URL or DATABASE_URL),
+            "postgres_platform_configured": is_postgres_platform_configured(),
+        },
+    )
 
 
 class MobileCredentials(BaseModel):
@@ -534,6 +931,7 @@ def load_github_dashboard_context(request: Request, msg: str = "", error: str = 
             github_error = str(exc)
 
     return templates.TemplateResponse(
+        request,
         "admin_github.html",
         {
             "request": request,
@@ -656,15 +1054,111 @@ def queue_attendance_event(user_email: str, organization: str, action: str, sour
         "event_type": normalized_action,
         "requested_at": datetime.now(timezone.utc).isoformat(),
         "source": source,
+        "telemetry": get_request_telemetry(),
     }
 
     try:
         publish_attendance_event(organization, payload)
     except Exception as exc:
-        record_exception_to_telemetry(exc)
+        record_exception_to_telemetry(
+            exc,
+            organization=organization,
+            user_email=user_email,
+            event_id=payload["event_id"],
+            attendance_action=normalized_action,
+            source=source,
+        )
         raise HTTPException(status_code=502, detail="Attendance event could not be queued to IoT Hub.") from exc
 
+    log_event(
+        logging.INFO,
+        "attendance_event_queued",
+        organization=organization,
+        user_email=user_email,
+        event_id=payload["event_id"],
+        attendance_action=normalized_action,
+        source=source,
+    )
     return payload
+
+
+def check_database_health() -> dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        db_url = get_admin_db_url()
+        with get_conn(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+    except Exception as exc:
+        return {
+            "status": "unhealthy",
+            "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+            "error": str(exc),
+        }
+
+    return {
+        "status": "healthy",
+        "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+    }
+
+
+def check_redis_health() -> dict[str, Any]:
+    if not REDIS_URL:
+        return {"status": "not_configured"}
+    if redis is None:
+        return {"status": "unhealthy", "error": "redis dependency is not installed"}
+
+    started = time.perf_counter()
+    try:
+        redis_client = get_redis_client()
+        if redis_client is None:
+            return {"status": "unhealthy", "error": "redis client could not be created"}
+        redis_client.ping()
+    except Exception as exc:
+        return {
+            "status": "unhealthy",
+            "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+            "error": str(exc),
+        }
+
+    return {
+        "status": "healthy",
+        "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+    }
+
+
+def check_iot_health() -> dict[str, Any]:
+    orgs = {
+        "contoso": bool(CONTOSO_DEVICE_CONNECTION_STRING),
+        "litware": bool(LITWARE_DEVICE_CONNECTION_STRING),
+    }
+    missing_orgs = [org for org, configured in orgs.items() if not configured]
+    if len(missing_orgs) == len(orgs):
+        return {"status": "not_configured"}
+    if missing_orgs:
+        return {"status": "degraded", "missing_organizations": missing_orgs}
+    return {"status": "healthy"}
+
+
+def build_health_payload() -> tuple[dict[str, Any], int]:
+    checks = {
+        "database": check_database_health(),
+        "redis": check_redis_health(),
+        "iot": check_iot_health(),
+        "telemetry": {"status": "healthy" if APPINSIGHTS_CONNECTION_STRING else "not_configured"},
+    }
+    unhealthy_checks = [name for name, result in checks.items() if result["status"] == "unhealthy"]
+    overall_status = "healthy" if not unhealthy_checks else "unhealthy"
+    status_code = 200 if overall_status == "healthy" else 503
+    payload = {
+        "status": overall_status,
+        "environment": os.getenv("ENV", "local"),
+        "request_id": get_request_id(),
+        "trace_id": get_trace_id(),
+        "checks": checks,
+    }
+    return payload, status_code
 
 
 def get_mobile_user_from_header(authorization: str | None) -> dict:
@@ -715,6 +1209,7 @@ def load_dashboard_context(request: Request, msg: str = "", error: str = ""):
         return RedirectResponse("/login?msg=Database+connection+failed", status_code=303)
 
     return templates.TemplateResponse(
+        request,
         "dashboard.html",
         {
             "request": request,
@@ -735,7 +1230,13 @@ def load_admin_dashboard_context(request: Request, msg: str = "", error: str = "
 
     recent_auth_events = []
     recent_attendance_events = []
-    stats = {"login_count": 0, "logout_count": 0, "attendance_count": 0, "tenant_count": 0}
+    stats = {
+        "login_count": 0,
+        "logout_count": 0,
+        "attendance_count": 0,
+        "tenant_count": 0,
+        "database_count": len(get_managed_database_entries()),
+    }
 
     try:
         ensure_admin_schema()
@@ -819,6 +1320,7 @@ def load_admin_dashboard_context(request: Request, msg: str = "", error: str = "
     recent_attendance_events = recent_attendance_events[:50]
 
     return templates.TemplateResponse(
+        request,
         "admin_dashboard.html",
         {
             "request": request,
@@ -838,14 +1340,56 @@ def home(request: Request, msg: str = ""):
     session_user = require_user_session(request)
     session_admin = require_admin_session(request)
     return templates.TemplateResponse(
+        request,
         "home.html",
         {"request": request, "session_user": session_user, "session_admin": session_admin, "msg": msg},
     )
 
 
+@app.middleware("http")
+async def add_request_context(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    token = _request_id_context.set(request_id)
+    request.state.request_id = request_id
+    started = time.perf_counter()
+    path = request.url.path
+    method = request.method
+
+    log_event(logging.INFO, "http_request_started", method=method, path=path)
+
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, method=method, path=path)
+        _request_id_context.reset(token)
+        raise
+
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    response.headers["X-Request-ID"] = request_id
+    level = logging.INFO if response.status_code < 500 else logging.ERROR
+    log_event(
+        level,
+        "http_request_completed",
+        method=method,
+        path=path,
+        status_code=response.status_code,
+        duration_ms=duration_ms,
+    )
+    _request_id_context.reset(token)
+    return response
+
+
+@app.get("/health/live")
+def liveness():
+    return {"status": "healthy", "environment": os.getenv("ENV", "local")}
+
+
 @app.get("/health")
 def health():
-    return {"status": "healthy"}
+    payload, status_code = build_health_payload()
+    log_level = logging.INFO if status_code == 200 else logging.ERROR
+    log_event(log_level, "health_check_completed", overall_status=payload["status"], checks=payload["checks"])
+    return JSONResponse(payload, status_code=status_code)
 
 
 @app.get("/hello/{name}")
@@ -855,7 +1399,7 @@ def hello(name: str):
 
 @app.get("/signup", response_class=HTMLResponse)
 def signup_page(request: Request, msg: str = ""):
-    return RedirectResponse("/?msg=Employee+signup+has+moved+to+the+Android+app", status_code=303)
+    return RedirectResponse("/?msg=Employee+signup+has+moved+to+the+macOS+app", status_code=303)
 
 
 @app.post("/signup")
@@ -873,7 +1417,7 @@ def signup(email: str = Form(...), password: str = Form(...), confirm_password: 
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, msg: str = ""):
-    return RedirectResponse("/?msg=Employee+login+has+moved+to+the+Android+app", status_code=303)
+    return RedirectResponse("/?msg=Employee+login+has+moved+to+the+macOS+app", status_code=303)
 
 
 @app.post("/login")
@@ -883,12 +1427,12 @@ def login(request: Request, email: str = Form(...), password: str = Form(...)):
     except HTTPException as exc:
         return RedirectResponse(f"/?msg={exc.detail.replace(' ', '+')}", status_code=303)
 
-    return RedirectResponse("/?msg=Employee+login+has+moved+to+the+Android+app", status_code=303)
+    return RedirectResponse("/?msg=Employee+login+has+moved+to+the+macOS+app", status_code=303)
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, msg: str = "", error: str = ""):
-    return RedirectResponse("/?msg=Employee+dashboard+is+available+in+the+Android+app", status_code=303)
+    return RedirectResponse("/?msg=Employee+dashboard+is+available+in+the+macOS+app", status_code=303)
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -900,16 +1444,18 @@ def admin_root(request: Request):
 
 @app.get("/admin/login", response_class=HTMLResponse)
 def admin_login_page(request: Request, msg: str = ""):
-    return templates.TemplateResponse("admin_login.html", {"request": request, "msg": msg})
+    return templates.TemplateResponse(request, "admin_login.html", {"request": request, "msg": msg})
 
 
 @app.post("/admin/login")
 def admin_login(request: Request, email: str = Form(...), password: str = Form(...)):
     normalized = email.lower().strip()
     if normalized != ADMIN_EMAIL or hash_password(password) != hash_password(ADMIN_PASSWORD):
+        log_event(logging.WARNING, "admin_login_failed", user_email=normalized)
         return RedirectResponse("/admin/login?msg=Invalid+admin+credentials", status_code=303)
 
     request.session["admin"] = {"email": normalized}
+    log_event(logging.INFO, "admin_login_succeeded", user_email=normalized)
     record_auth_event(normalized, "admin", "login", actor_type="admin")
     return RedirectResponse("/admin/dashboard?msg=Admin+session+started", status_code=303)
 
@@ -922,6 +1468,11 @@ def admin_dashboard(request: Request, msg: str = "", error: str = ""):
 @app.get("/admin/github", response_class=HTMLResponse)
 def admin_github_dashboard(request: Request, msg: str = "", error: str = ""):
     return load_github_dashboard_context(request, msg=msg, error=error)
+
+
+@app.get("/admin/databases", response_class=HTMLResponse)
+def admin_database_dashboard(request: Request, msg: str = "", error: str = ""):
+    return load_database_dashboard_context(request, msg=msg, error=error)
 
 
 @app.post("/admin/github/approve")
@@ -1011,9 +1562,159 @@ def admin_github_reject(request: Request, pr_number: int = Form(...)):
         )
 
 
+@app.post("/admin/databases/ensure-schema")
+def admin_database_ensure_schema(request: Request, database_key: str = Form(...)):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        entry = get_managed_database_entry(database_key)
+        ensure_schema(str(entry["db_url"]))
+        message = f"{entry['label']} schema verified."
+        return RedirectResponse(f"/admin/databases?msg={urllib_parse.quote_plus(message)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, database_key=database_key, action="ensure_schema")
+        return RedirectResponse(
+            f"/admin/databases?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
+@app.post("/admin/databases/server/backup")
+def admin_database_server_backup(request: Request, backup_name: str = Form(...)):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        run_postgres_platform_action("create-backup", BackupName=backup_name)
+        message = f"Backup {backup_name} started for {AZURE_POSTGRES_SERVER_NAME}."
+        return RedirectResponse(f"/admin/databases?msg={urllib_parse.quote_plus(message)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="create_backup")
+        return RedirectResponse(
+            f"/admin/databases?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
+@app.post("/admin/databases/server/restore")
+def admin_database_server_restore(
+    request: Request,
+    target_server_name: str = Form(...),
+    restore_time_utc: str = Form(...),
+):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        run_postgres_platform_action(
+            "restore-server",
+            TargetServerName=target_server_name,
+            RestoreTimeUtc=restore_time_utc,
+        )
+        message = (
+            f"Point-in-time restore started for {AZURE_POSTGRES_SERVER_NAME} into {target_server_name}."
+        )
+        return RedirectResponse(f"/admin/databases?msg={urllib_parse.quote_plus(message)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="restore_server")
+        return RedirectResponse(
+            f"/admin/databases?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
+@app.post("/admin/databases/server/start")
+def admin_database_server_start(request: Request):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        run_postgres_platform_action("start-server")
+        message = f"Start requested for {AZURE_POSTGRES_SERVER_NAME}."
+        return RedirectResponse(f"/admin/databases?msg={urllib_parse.quote_plus(message)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="start_server")
+        return RedirectResponse(
+            f"/admin/databases?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
+@app.post("/admin/databases/server/stop")
+def admin_database_server_stop(request: Request):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        run_postgres_platform_action("stop-server")
+        message = f"Stop requested for {AZURE_POSTGRES_SERVER_NAME}."
+        return RedirectResponse(f"/admin/databases?msg={urllib_parse.quote_plus(message)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="stop_server")
+        return RedirectResponse(
+            f"/admin/databases?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
+@app.post("/admin/databases/server/restart")
+def admin_database_server_restart(request: Request):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        run_postgres_platform_action("restart-server")
+        message = f"Restart requested for {AZURE_POSTGRES_SERVER_NAME}."
+        return RedirectResponse(f"/admin/databases?msg={urllib_parse.quote_plus(message)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="restart_server")
+        return RedirectResponse(
+            f"/admin/databases?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
+@app.post("/admin/databases/server/delete")
+def admin_database_server_delete(request: Request):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        run_postgres_platform_action("delete-server")
+        message = f"Delete requested for server {AZURE_POSTGRES_SERVER_NAME}."
+        return RedirectResponse(f"/admin/databases?msg={urllib_parse.quote_plus(message)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="delete_server")
+        return RedirectResponse(
+            f"/admin/databases?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
+@app.post("/admin/databases/database/delete")
+def admin_database_delete(request: Request, database_key: str = Form(...)):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        entry = get_managed_database_entry(database_key)
+        if entry["organization"] == "admin":
+            raise RuntimeError("Delete is disabled for the shared admin database.")
+        run_postgres_platform_action("delete-database", DatabaseName=str(entry["database_name"]))
+        message = f"{entry['label']} delete requested on {AZURE_POSTGRES_SERVER_NAME}."
+        return RedirectResponse(f"/admin/databases?msg={urllib_parse.quote_plus(message)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, database_key=database_key, action="delete_database")
+        return RedirectResponse(
+            f"/admin/databases?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
 @app.post("/attendance/punch")
 def attendance_punch(request: Request, action: str = Form(...)):
-    return RedirectResponse("/?msg=Attendance+punching+has+moved+to+the+Android+app", status_code=303)
+    return RedirectResponse("/?msg=Attendance+punching+has+moved+to+the+macOS+app", status_code=303)
 
 
 @app.get("/logout")
@@ -1025,6 +1726,7 @@ def logout(request: Request):
     if session_admin:
         record_auth_event(session_admin["email"], "admin", "logout", actor_type="admin")
     request.session.clear()
+    log_event(logging.INFO, "session_logout_completed")
     return RedirectResponse("/", status_code=303)
 
 
@@ -1050,6 +1752,12 @@ def admin_logout(request: Request):
 def mobile_signup(payload: MobileCredentials):
     employee = create_employee_account(payload.email, payload.password)
     token = create_mobile_token(employee["email"], employee["organization"])
+    log_event(
+        logging.INFO,
+        "mobile_signup_succeeded",
+        user_email=employee["email"],
+        organization=employee["organization"],
+    )
     record_auth_event(employee["email"], employee["organization"], "signup", source="mobile-app")
     record_auth_event(employee["email"], employee["organization"], "login", source="mobile-app")
     return JSONResponse(
@@ -1065,6 +1773,12 @@ def mobile_signup(payload: MobileCredentials):
 def mobile_login(payload: MobileCredentials):
     employee = authenticate_employee(payload.email, payload.password)
     token = create_mobile_token(employee["email"], employee["organization"])
+    log_event(
+        logging.INFO,
+        "mobile_login_succeeded",
+        user_email=employee["email"],
+        organization=employee["organization"],
+    )
     record_auth_event(employee["email"], employee["organization"], "login", source="mobile-app")
     return JSONResponse(
         {
@@ -1096,6 +1810,14 @@ def mobile_attendance_punch(payload: MobilePunchRequest, authorization: str | No
         employee["organization"],
         payload.action,
         source="mobile-app",
+    )
+    log_event(
+        logging.INFO,
+        "mobile_attendance_punch_accepted",
+        user_email=employee["email"],
+        organization=employee["organization"],
+        event_id=event["event_id"],
+        attendance_action=event["event_type"],
     )
     return JSONResponse(
         {

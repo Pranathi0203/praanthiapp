@@ -30,13 +30,13 @@ module "app" {
   image_name = var.image_name
   image_tag  = var.image_tag
 
-  container_port      = var.container_port
-  allowed_client_cidr = var.allowed_client_cidr
-  contoso_device_connection_string = var.contoso_device_connection_string
-  litware_device_connection_string = var.litware_device_connection_string
-  iothub_eventhub_connection_string = var.iothub_eventhub_connection_string
+  container_port                         = var.container_port
+  allowed_client_cidr                    = var.allowed_client_cidr
+  contoso_device_connection_string       = var.contoso_device_connection_string
+  litware_device_connection_string       = var.litware_device_connection_string
+  iothub_eventhub_connection_string      = var.iothub_eventhub_connection_string
   application_insights_connection_string = var.application_insights_connection_string
-  github_dashboard_token = var.github_dashboard_token
+  github_dashboard_token                 = var.github_dashboard_token
 
   # Optional extra settings
   app_settings = {
@@ -73,4 +73,10 @@ output "iothub_name" {
 }
 output "function_app_name" {
   value = module.app.function_app_name
+}
+output "log_analytics_workspace_id" {
+  value = module.app.log_analytics_workspace_id
+}
+output "log_analytics_workspace_name" {
+  value = module.app.log_analytics_workspace_name
 }

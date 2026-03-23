@@ -40,6 +40,11 @@ locals {
     0,
     50
   )
+  log_analytics_workspace_name = substr(
+    "${substr(local.base_name, 0, 18)}-${var.env_name}-law-${random_integer.suffix.result}",
+    0,
+    63
+  )
   attendance_queue_name = "attendance-events"
   iothub_name = substr(
     "${substr(local.base_name, 0, 18)}-${var.env_name}-iot-${random_integer.suffix.result}",
@@ -66,19 +71,23 @@ locals {
   app_nsg_name    = substr("${var.webapp_name}-${var.env_name}-app-nsg", 0, 80)
   allow_rule_name = "AllowCurrentClientIp"
   base_app_settings = {
-    "WEBSITES_ENABLE_APP_SERVICE_STORAGE"   = "false"
-    "PORT"                                  = tostring(var.container_port)
-    "ENV"                                   = var.env_name
-    "DB_HOST"                               = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_host.versionless_id})"
-    "DB_NAME"                               = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_name.versionless_id})"
-    "DB_USERNAME"                           = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_username.versionless_id})"
-    "DB_PASSWORD"                           = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_password.versionless_id})"
-    "DATABASE_URL"                          = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_connection_string.versionless_id})"
-    "CONTOSO_DATABASE_URL"                  = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_db_connection_string.versionless_id})"
-    "LITWARE_DATABASE_URL"                  = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_db_connection_string.versionless_id})"
-    "REDIS_URL"                             = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.redis_url.versionless_id})"
-    "APIM_LOGIN_PATH"                       = "/auth/login"
-    "APIM_SIGNUP_PATH"                      = "/auth/signup"
+    "WEBSITES_ENABLE_APP_SERVICE_STORAGE" = "false"
+    "PORT"                                = tostring(var.container_port)
+    "ENV"                                 = var.env_name
+    "DB_HOST"                             = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_host.versionless_id})"
+    "DB_NAME"                             = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_name.versionless_id})"
+    "DB_USERNAME"                         = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_username.versionless_id})"
+    "DB_PASSWORD"                         = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_password.versionless_id})"
+    "DATABASE_URL"                        = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_connection_string.versionless_id})"
+    "CONTOSO_DATABASE_URL"                = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_db_connection_string.versionless_id})"
+    "LITWARE_DATABASE_URL"                = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_db_connection_string.versionless_id})"
+    "AZURE_SUBSCRIPTION_ID"               = data.azurerm_client_config.current.subscription_id
+    "AZURE_RESOURCE_GROUP"                = data.azurerm_resource_group.rg.name
+    "AZURE_POSTGRES_SERVER_NAME"          = local.postgresql_server_name
+    "AZURE_USE_MANAGED_IDENTITY"          = "true"
+    "REDIS_URL"                           = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.redis_url.versionless_id})"
+    "APIM_LOGIN_PATH"                     = "/auth/login"
+    "APIM_SIGNUP_PATH"                    = "/auth/signup"
   }
   optional_app_settings = var.contoso_device_connection_string != "" ? {
     "CONTOSO_DEVICE_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_device_connection_string[0].versionless_id})"
@@ -89,21 +98,36 @@ locals {
   optional_app_insights_settings = var.application_insights_connection_string != "" ? {
     "APPLICATIONINSIGHTS_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.application_insights_connection_string[0].versionless_id})"
   } : {}
+  optional_datadog_settings = merge(
+    {
+      "DD_SERVICE"        = var.dd_service != "" ? var.dd_service : var.webapp_name
+      "DD_ENV"            = var.dd_env != "" ? var.dd_env : var.env_name
+      "DD_VERSION"        = var.dd_version
+      "DD_TRACE_ENABLED"  = tostring(var.dd_trace_enabled)
+      "DD_LOGS_INJECTION" = tostring(var.dd_logs_injection)
+    },
+    var.dd_agent_host != "" ? {
+      "DD_AGENT_HOST" = var.dd_agent_host
+    } : {},
+    var.dd_trace_agent_url != "" ? {
+      "DD_TRACE_AGENT_URL" = var.dd_trace_agent_url
+    } : {}
+  )
   optional_github_dashboard_settings = var.github_dashboard_token != "" ? {
     "GITHUB_DASHBOARD_TOKEN" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.github_dashboard_token[0].versionless_id})"
     "GITHUB_REPOSITORY"      = "Pranathi0203/praanthiapp"
   } : {}
   function_app_settings = merge(
     {
-      "AzureWebJobsStorage"      = azurerm_storage_account.function.primary_connection_string
-      "FUNCTIONS_WORKER_RUNTIME" = "python"
+      "AzureWebJobsStorage"            = azurerm_storage_account.function.primary_connection_string
+      "FUNCTIONS_WORKER_RUNTIME"       = "python"
       "SCM_DO_BUILD_DURING_DEPLOYMENT" = "true"
       "ENABLE_ORYX_BUILD"              = "true"
-      "ATTENDANCE_QUEUE_NAME"    = azurerm_servicebus_queue.attendance.name
-      "IOTHUB_EVENTHUB_NAME"     = azurerm_iothub.app.name
-      "SERVICEBUS_CONNECTION"    = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.servicebus_connection_string.versionless_id})"
-      "CONTOSO_DATABASE_URL"     = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_db_connection_string.versionless_id})"
-      "LITWARE_DATABASE_URL"     = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_db_connection_string.versionless_id})"
+      "ATTENDANCE_QUEUE_NAME"          = azurerm_servicebus_queue.attendance.name
+      "IOTHUB_EVENTHUB_NAME"           = azurerm_iothub.app.name
+      "SERVICEBUS_CONNECTION"          = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.servicebus_connection_string.versionless_id})"
+      "CONTOSO_DATABASE_URL"           = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_db_connection_string.versionless_id})"
+      "LITWARE_DATABASE_URL"           = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_db_connection_string.versionless_id})"
     },
     var.application_insights_connection_string != "" ? {
       "APPLICATIONINSIGHTS_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.application_insights_connection_string[0].versionless_id})"
@@ -183,14 +207,22 @@ resource "azurerm_service_plan" "plan" {
   sku_name            = var.plan_sku
 }
 
-resource "azurerm_redis_cache" "app" {
-  name                = local.redis_name
+resource "azurerm_log_analytics_workspace" "observability" {
+  name                = local.log_analytics_workspace_name
   location            = data.azurerm_resource_group.rg.location
   resource_group_name = data.azurerm_resource_group.rg.name
-  capacity            = var.redis_capacity
-  family              = var.redis_family
-  sku_name            = var.redis_sku_name
-  minimum_tls_version = "1.2"
+  sku                 = "PerGB2018"
+  retention_in_days   = var.log_analytics_retention_days
+}
+
+resource "azurerm_redis_cache" "app" {
+  name                 = local.redis_name
+  location             = data.azurerm_resource_group.rg.location
+  resource_group_name  = data.azurerm_resource_group.rg.name
+  capacity             = var.redis_capacity
+  family               = var.redis_family
+  sku_name             = var.redis_sku_name
+  minimum_tls_version  = "1.2"
   non_ssl_port_enabled = false
 }
 
@@ -247,6 +279,7 @@ resource "azurerm_linux_web_app" "app" {
 
   site_config {
     always_on                               = true
+    health_check_path                       = "/health"
     vnet_route_all_enabled                  = true
     ip_restriction_default_action           = "Deny"
     scm_ip_restriction_default_action       = "Deny"
@@ -277,6 +310,7 @@ resource "azurerm_linux_web_app" "app" {
     local.optional_app_settings,
     local.optional_litware_app_settings,
     local.optional_app_insights_settings,
+    local.optional_datadog_settings,
     local.optional_github_dashboard_settings,
     var.app_settings
   )
@@ -293,6 +327,7 @@ resource "azurerm_linux_web_app_slot" "staging" {
 
   site_config {
     always_on                               = true
+    health_check_path                       = "/health"
     vnet_route_all_enabled                  = true
     ip_restriction_default_action           = "Deny"
     scm_ip_restriction_default_action       = "Deny"
@@ -323,6 +358,7 @@ resource "azurerm_linux_web_app_slot" "staging" {
     local.optional_app_settings,
     local.optional_litware_app_settings,
     local.optional_app_insights_settings,
+    local.optional_datadog_settings,
     local.optional_github_dashboard_settings,
     var.app_settings,
     { "ENV" = "${var.env_name}-staging" }
@@ -338,6 +374,18 @@ resource "azurerm_role_assignment" "acr_pull" {
 resource "azurerm_role_assignment" "acr_pull_staging" {
   scope                = data.azurerm_container_registry.acr.id
   role_definition_name = "AcrPull"
+  principal_id         = azurerm_linux_web_app_slot.staging.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "webapp_rg_contributor" {
+  scope                = data.azurerm_resource_group.rg.id
+  role_definition_name = "Contributor"
+  principal_id         = azurerm_linux_web_app.app.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "webapp_staging_rg_contributor" {
+  scope                = data.azurerm_resource_group.rg.id
+  role_definition_name = "Contributor"
   principal_id         = azurerm_linux_web_app_slot.staging.identity[0].principal_id
 }
 
@@ -443,6 +491,188 @@ resource "azurerm_linux_function_app" "attendance" {
   }
 
   app_settings = local.function_app_settings
+}
+
+data "azurerm_monitor_diagnostic_categories" "webapp" {
+  resource_id = azurerm_linux_web_app.app.id
+}
+
+data "azurerm_monitor_diagnostic_categories" "webapp_staging" {
+  resource_id = azurerm_linux_web_app_slot.staging.id
+}
+
+data "azurerm_monitor_diagnostic_categories" "function_app" {
+  resource_id = azurerm_linux_function_app.attendance.id
+}
+
+data "azurerm_monitor_diagnostic_categories" "servicebus" {
+  resource_id = azurerm_servicebus_namespace.app.id
+}
+
+data "azurerm_monitor_diagnostic_categories" "redis" {
+  resource_id = azurerm_redis_cache.app.id
+}
+
+data "azurerm_monitor_diagnostic_categories" "postgres" {
+  resource_id = azurerm_postgresql_flexible_server.db.id
+}
+
+data "azurerm_monitor_diagnostic_categories" "iothub" {
+  resource_id = azurerm_iothub.app.id
+}
+
+resource "azurerm_monitor_diagnostic_setting" "webapp" {
+  name                           = "${var.webapp_name}-${var.env_name}-diag"
+  target_resource_id             = azurerm_linux_web_app.app.id
+  log_analytics_workspace_id     = azurerm_log_analytics_workspace.observability.id
+  log_analytics_destination_type = "Dedicated"
+
+  dynamic "enabled_log" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.webapp.log_category_types)
+    content {
+      category = enabled_log.value
+    }
+  }
+
+  dynamic "metric" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.webapp.metrics)
+    content {
+      category = metric.value
+      enabled  = true
+    }
+  }
+}
+
+resource "azurerm_monitor_diagnostic_setting" "webapp_staging" {
+  name                           = "${var.webapp_name}-${var.env_name}-staging-diag"
+  target_resource_id             = azurerm_linux_web_app_slot.staging.id
+  log_analytics_workspace_id     = azurerm_log_analytics_workspace.observability.id
+  log_analytics_destination_type = "Dedicated"
+
+  dynamic "enabled_log" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.webapp_staging.log_category_types)
+    content {
+      category = enabled_log.value
+    }
+  }
+
+  dynamic "metric" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.webapp_staging.metrics)
+    content {
+      category = metric.value
+      enabled  = true
+    }
+  }
+}
+
+resource "azurerm_monitor_diagnostic_setting" "function_app" {
+  name                           = "${local.function_app_name}-diag"
+  target_resource_id             = azurerm_linux_function_app.attendance.id
+  log_analytics_workspace_id     = azurerm_log_analytics_workspace.observability.id
+  log_analytics_destination_type = "Dedicated"
+
+  dynamic "enabled_log" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.function_app.log_category_types)
+    content {
+      category = enabled_log.value
+    }
+  }
+
+  dynamic "metric" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.function_app.metrics)
+    content {
+      category = metric.value
+      enabled  = true
+    }
+  }
+}
+
+resource "azurerm_monitor_diagnostic_setting" "servicebus" {
+  name                           = "${azurerm_servicebus_namespace.app.name}-diag"
+  target_resource_id             = azurerm_servicebus_namespace.app.id
+  log_analytics_workspace_id     = azurerm_log_analytics_workspace.observability.id
+  log_analytics_destination_type = "Dedicated"
+
+  dynamic "enabled_log" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.servicebus.log_category_types)
+    content {
+      category = enabled_log.value
+    }
+  }
+
+  dynamic "metric" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.servicebus.metrics)
+    content {
+      category = metric.value
+      enabled  = true
+    }
+  }
+}
+
+resource "azurerm_monitor_diagnostic_setting" "redis" {
+  name                           = "${azurerm_redis_cache.app.name}-diag"
+  target_resource_id             = azurerm_redis_cache.app.id
+  log_analytics_workspace_id     = azurerm_log_analytics_workspace.observability.id
+  log_analytics_destination_type = "Dedicated"
+
+  dynamic "enabled_log" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.redis.log_category_types)
+    content {
+      category = enabled_log.value
+    }
+  }
+
+  dynamic "metric" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.redis.metrics)
+    content {
+      category = metric.value
+      enabled  = true
+    }
+  }
+}
+
+resource "azurerm_monitor_diagnostic_setting" "postgres" {
+  name                           = "${azurerm_postgresql_flexible_server.db.name}-diag"
+  target_resource_id             = azurerm_postgresql_flexible_server.db.id
+  log_analytics_workspace_id     = azurerm_log_analytics_workspace.observability.id
+  log_analytics_destination_type = "Dedicated"
+
+  dynamic "enabled_log" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.postgres.log_category_types)
+    content {
+      category = enabled_log.value
+    }
+  }
+
+  dynamic "metric" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.postgres.metrics)
+    content {
+      category = metric.value
+      enabled  = true
+    }
+  }
+}
+
+resource "azurerm_monitor_diagnostic_setting" "iothub" {
+  name                           = "${azurerm_iothub.app.name}-diag"
+  target_resource_id             = azurerm_iothub.app.id
+  log_analytics_workspace_id     = azurerm_log_analytics_workspace.observability.id
+  log_analytics_destination_type = "Dedicated"
+
+  dynamic "enabled_log" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.iothub.log_category_types)
+    content {
+      category = enabled_log.value
+    }
+  }
+
+  dynamic "metric" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.iothub.metrics)
+    content {
+      category = metric.value
+      enabled  = true
+    }
+  }
 }
 
 resource "azurerm_key_vault_access_policy" "function_identity" {
