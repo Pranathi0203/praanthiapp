@@ -701,6 +701,7 @@ def load_database_dashboard_context(request: Request, msg: str = "", error: str 
         databases.append(database_info)
 
     return templates.TemplateResponse(
+        request,
         "admin_database.html",
         {
             "request": request,
@@ -930,6 +931,7 @@ def load_github_dashboard_context(request: Request, msg: str = "", error: str = 
             github_error = str(exc)
 
     return templates.TemplateResponse(
+        request,
         "admin_github.html",
         {
             "request": request,
@@ -1207,6 +1209,7 @@ def load_dashboard_context(request: Request, msg: str = "", error: str = ""):
         return RedirectResponse("/login?msg=Database+connection+failed", status_code=303)
 
     return templates.TemplateResponse(
+        request,
         "dashboard.html",
         {
             "request": request,
@@ -1317,6 +1320,7 @@ def load_admin_dashboard_context(request: Request, msg: str = "", error: str = "
     recent_attendance_events = recent_attendance_events[:50]
 
     return templates.TemplateResponse(
+        request,
         "admin_dashboard.html",
         {
             "request": request,
@@ -1336,6 +1340,7 @@ def home(request: Request, msg: str = ""):
     session_user = require_user_session(request)
     session_admin = require_admin_session(request)
     return templates.TemplateResponse(
+        request,
         "home.html",
         {"request": request, "session_user": session_user, "session_admin": session_admin, "msg": msg},
     )
@@ -1439,7 +1444,7 @@ def admin_root(request: Request):
 
 @app.get("/admin/login", response_class=HTMLResponse)
 def admin_login_page(request: Request, msg: str = ""):
-    return templates.TemplateResponse("admin_login.html", {"request": request, "msg": msg})
+    return templates.TemplateResponse(request, "admin_login.html", {"request": request, "msg": msg})
 
 
 @app.post("/admin/login")
