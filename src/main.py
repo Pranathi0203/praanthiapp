@@ -103,6 +103,8 @@ _redis_client = None
 _tenant_iot_clients = {}
 _mobile_token_serializer = URLSafeTimedSerializer(APP_SECRET, salt="employee-mobile-auth")
 _request_id_context: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
+_postgres_platform_cache: dict[str, tuple[float, dict | list]] = {}
+POSTGRES_PLATFORM_CACHE_TTL_SECONDS = int(os.getenv("POSTGRES_PLATFORM_CACHE_TTL_SECONDS", "30"))
 
 
 def _compact_fields(fields: dict[str, Any]) -> dict[str, Any]:
@@ -303,6 +305,18 @@ def run_postgres_platform_action(action: str, **kwargs: str) -> dict | list:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"PowerShell script returned non-JSON output: {raw}") from exc
+
+
+def get_cached_postgres_platform_action(action: str, **kwargs: str) -> dict | list:
+    cache_key = json.dumps({"action": action, "kwargs": kwargs}, sort_keys=True)
+    cached_item = _postgres_platform_cache.get(cache_key)
+    now = time.time()
+    if cached_item and now - cached_item[0] < POSTGRES_PLATFORM_CACHE_TTL_SECONDS:
+        return cached_item[1]
+
+    result = run_postgres_platform_action(action, **kwargs)
+    _postgres_platform_cache[cache_key] = (now, result)
+    return result
 
 
 def hash_password(password: str) -> str:
@@ -611,94 +625,95 @@ def load_database_dashboard_context(request: Request, msg: str = "", error: str 
 
     if server["configured"]:
         try:
-            server_payload = run_postgres_platform_action("show-server")
-            if isinstance(server_payload, dict):
-                server["status"] = server_payload.get("state", "Unknown")
-                server["sku"] = ((server_payload.get("sku") or {}).get("name")) or ""
-                server["version"] = server_payload.get("version", "")
-                server["storage_mb"] = server_payload.get("storage", {}).get("storageSizeGb", "")
-                server["backup_retention_days"] = server_payload.get("backup", {}).get(
-                    "backupRetentionDays", ""
-                )
-                server["ha_state"] = (server_payload.get("highAvailability") or {}).get("state", "")
-                server["fqdn"] = server_payload.get("fullyQualifiedDomainName", "")
+            overview_payload = get_cached_postgres_platform_action("show-overview")
+            if isinstance(overview_payload, dict):
+                server_payload = overview_payload.get("server") or {}
+                if isinstance(server_payload, dict):
+                    server["status"] = server_payload.get("state", "Unknown")
+                    server["sku"] = ((server_payload.get("sku") or {}).get("name")) or ""
+                    server["version"] = server_payload.get("version", "")
+                    server["storage_mb"] = server_payload.get("storage", {}).get("storageSizeGb", "")
+                    server["backup_retention_days"] = server_payload.get("backup", {}).get(
+                        "backupRetentionDays", ""
+                    )
+                    server["ha_state"] = (server_payload.get("highAvailability") or {}).get("state", "")
+                    server["fqdn"] = server_payload.get("fullyQualifiedDomainName", "")
+
+                backup_payload = overview_payload.get("backups") or []
+                if isinstance(backup_payload, list):
+                    backups = backup_payload[:10]
         except Exception as exc:
             server["error"] = str(exc)
-            record_exception_to_telemetry(exc, action="show_postgres_server")
-
-        try:
-            backup_payload = run_postgres_platform_action("list-backups")
-            if isinstance(backup_payload, list):
-                backups = backup_payload[:10]
-        except Exception as exc:
-            if not server["error"]:
-                server["error"] = str(exc)
-            record_exception_to_telemetry(exc, action="list_postgres_backups")
+            record_exception_to_telemetry(exc, action="show_postgres_overview")
 
     databases = []
-    for entry in managed_entries:
-        database_name = str(entry["database_name"])
-        database_info = {
-            "key": entry["key"],
-            "label": entry["label"],
-            "database_name": database_name,
-            "organization": entry["organization"],
-            "exists": False,
-            "size": "Unavailable",
-            "active_connections": 0,
-            "app_user_count": None,
-            "attendance_event_count": None,
-            "schema_ready": False,
-            "can_delete": entry["can_delete"],
-            "error": "",
-        }
+    try:
+        with get_conn(get_postgres_admin_url()) as admin_conn:
+            with admin_conn.cursor() as admin_cur:
+                for entry in managed_entries:
+                    database_name = str(entry["database_name"])
+                    database_info = {
+                        "key": entry["key"],
+                        "label": entry["label"],
+                        "database_name": database_name,
+                        "organization": entry["organization"],
+                        "exists": False,
+                        "size": "Unavailable",
+                        "active_connections": 0,
+                        "app_user_count": None,
+                        "attendance_event_count": None,
+                        "schema_ready": False,
+                        "can_delete": entry["can_delete"],
+                        "error": "",
+                    }
 
-        try:
-            with get_conn(get_postgres_admin_url()) as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (database_name,))
-                    database_info["exists"] = cur.fetchone() is not None
+                    try:
+                        admin_cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (database_name,))
+                        database_info["exists"] = admin_cur.fetchone() is not None
 
-                    if database_info["exists"]:
-                        cur.execute("SELECT pg_size_pretty(pg_database_size(%s))", (database_name,))
-                        size_row = cur.fetchone()
-                        database_info["size"] = size_row[0] if size_row and size_row[0] else "0 bytes"
+                        if database_info["exists"]:
+                            admin_cur.execute("SELECT pg_size_pretty(pg_database_size(%s))", (database_name,))
+                            size_row = admin_cur.fetchone()
+                            database_info["size"] = size_row[0] if size_row and size_row[0] else "0 bytes"
 
-                        cur.execute(
-                            "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = %s",
-                            (database_name,),
-                        )
-                        connection_row = cur.fetchone()
-                        database_info["active_connections"] = (
-                            connection_row[0] if connection_row and connection_row[0] else 0
-                        )
+                            admin_cur.execute(
+                                "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = %s",
+                                (database_name,),
+                            )
+                            connection_row = admin_cur.fetchone()
+                            database_info["active_connections"] = (
+                                connection_row[0] if connection_row and connection_row[0] else 0
+                            )
 
-            if database_info["exists"]:
-                with get_conn(str(entry["db_url"])) as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            SELECT
-                                to_regclass('public.app_users') IS NOT NULL,
-                                to_regclass('public.attendance_events') IS NOT NULL
-                            """
-                        )
-                        schema_row = cur.fetchone() or (False, False)
-                        app_users_exists, attendance_exists = schema_row
-                        database_info["schema_ready"] = bool(app_users_exists and attendance_exists)
+                        if database_info["exists"]:
+                            with get_conn(str(entry["db_url"])) as tenant_conn:
+                                with tenant_conn.cursor() as tenant_cur:
+                                    tenant_cur.execute(
+                                        """
+                                        SELECT
+                                            to_regclass('public.app_users') IS NOT NULL,
+                                            to_regclass('public.attendance_events') IS NOT NULL
+                                        """
+                                    )
+                                    schema_row = tenant_cur.fetchone() or (False, False)
+                                    app_users_exists, attendance_exists = schema_row
+                                    database_info["schema_ready"] = bool(app_users_exists and attendance_exists)
 
-                        if app_users_exists:
-                            cur.execute("SELECT COUNT(*) FROM app_users")
-                            database_info["app_user_count"] = cur.fetchone()[0] or 0
+                                    if app_users_exists:
+                                        tenant_cur.execute("SELECT COUNT(*) FROM app_users")
+                                        database_info["app_user_count"] = tenant_cur.fetchone()[0] or 0
 
-                        if attendance_exists:
-                            cur.execute("SELECT COUNT(*) FROM attendance_events")
-                            database_info["attendance_event_count"] = cur.fetchone()[0] or 0
-        except Exception as exc:
-            database_info["error"] = str(exc)
-            record_exception_to_telemetry(exc, database_name=database_name)
+                                    if attendance_exists:
+                                        tenant_cur.execute("SELECT COUNT(*) FROM attendance_events")
+                                        database_info["attendance_event_count"] = tenant_cur.fetchone()[0] or 0
+                    except Exception as exc:
+                        database_info["error"] = str(exc)
+                        record_exception_to_telemetry(exc, database_name=database_name)
 
-        databases.append(database_info)
+                    databases.append(database_info)
+    except Exception as exc:
+        error = error or str(exc)
+        record_exception_to_telemetry(exc, action="load_database_inventory")
 
     return templates.TemplateResponse(
         request,

@@ -100,6 +100,25 @@ Ensure-AzCli
 Connect-Azure
 
 $result = switch ($Action) {
+    "show-overview" {
+        $server = Invoke-AzJson @(
+            "postgres", "flexible-server", "show",
+            "--resource-group", $ResourceGroup,
+            "--name", $ServerName
+        )
+
+        $backups = Invoke-AzJson @(
+            "postgres", "flexible-server", "backup", "list",
+            "--resource-group", $ResourceGroup,
+            "--name", $ServerName
+        )
+
+        @{
+            server = $server
+            backups = $backups
+        }
+        break
+    }
     "show-server" {
         Invoke-AzJson @(
             "postgres", "flexible-server", "show",
