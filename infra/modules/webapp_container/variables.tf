@@ -159,6 +159,41 @@ variable "application_insights_connection_string" {
   sensitive = true
 }
 
+variable "dd_service" {
+  type    = string
+  default = ""
+}
+
+variable "dd_env" {
+  type    = string
+  default = ""
+}
+
+variable "dd_version" {
+  type    = string
+  default = ""
+}
+
+variable "dd_trace_enabled" {
+  type    = bool
+  default = false
+}
+
+variable "dd_logs_injection" {
+  type    = bool
+  default = true
+}
+
+variable "dd_agent_host" {
+  type    = string
+  default = ""
+}
+
+variable "dd_trace_agent_url" {
+  type    = string
+  default = ""
+}
+
 variable "github_dashboard_token" {
   type      = string
   default   = ""
