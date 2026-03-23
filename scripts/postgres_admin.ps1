@@ -27,13 +27,16 @@ function ConvertTo-Boolean {
         return $false
     }
 
-    switch ($Value.Trim().ToLowerInvariant()) {
-        "true" { return $true }
-        "false" { return $false }
-        "1" { return $true }
-        "0" { return $false }
-        "$true" { return $true }
-        "$false" { return $false }
+    $normalizedValue = $Value.Trim().ToLowerInvariant()
+    if ($normalizedValue.StartsWith('$')) {
+        $normalizedValue = $normalizedValue.Substring(1)
+    }
+
+    switch ($normalizedValue) {
+        'true' { return $true }
+        'false' { return $false }
+        '1' { return $true }
+        '0' { return $false }
         default {
             throw "Invalid boolean value: $Value"
         }
