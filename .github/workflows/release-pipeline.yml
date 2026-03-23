@@ -200,6 +200,53 @@ jobs:
           import_secret_if_needed 'module.app.azurerm_key_vault_secret.application_insights_connection_string[0]' 'applicationinsights-connection-string'
           import_secret_if_needed 'module.app.azurerm_key_vault_secret.github_dashboard_token[0]' 'github-dashboard-token'
 
+      - name: Import existing web app Contributor role assignments if needed
+        working-directory: infra/envs/dev
+        run: |
+          RG_SCOPE="/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ vars.RG_NAME }}"
+
+          import_role_assignment_if_needed() {
+            local address="$1"
+            local principal_id="$2"
+
+            if terraform state show "$address" >/dev/null 2>&1; then
+              echo "$address is already tracked in Terraform state."
+              return 0
+            fi
+
+            local role_assignment_id
+            role_assignment_id="$(az role assignment list \
+              --assignee-object-id "$principal_id" \
+              --scope "$RG_SCOPE" \
+              --role Contributor \
+              --query '[0].id' \
+              -o tsv 2>/dev/null || true)"
+
+            if [ -z "$role_assignment_id" ]; then
+              echo "No existing Contributor role assignment found for principal $principal_id. Skipping import."
+              return 0
+            fi
+
+            echo "Importing existing Contributor role assignment for principal $principal_id into Terraform state."
+            terraform import -lock-timeout=5m "$address" "$role_assignment_id"
+          }
+
+          APP_PRINCIPAL_ID="$(az webapp identity show \
+            --resource-group "${{ vars.RG_NAME }}" \
+            --name "${{ vars.WEBAPP_NAME }}" \
+            --query principalId \
+            -o tsv)"
+
+          STAGING_PRINCIPAL_ID="$(az webapp identity show \
+            --resource-group "${{ vars.RG_NAME }}" \
+            --name "${{ vars.WEBAPP_NAME }}" \
+            --slot staging \
+            --query principalId \
+            -o tsv)"
+
+          import_role_assignment_if_needed 'module.app.azurerm_role_assignment.webapp_rg_contributor' "$APP_PRINCIPAL_ID"
+          import_role_assignment_if_needed 'module.app.azurerm_role_assignment.webapp_staging_rg_contributor' "$STAGING_PRINCIPAL_ID"
+
       - name: Terraform apply
         working-directory: infra/envs/dev
         run: |
