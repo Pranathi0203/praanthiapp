@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import os
+import subprocess
 import time
 import uuid
 from datetime import datetime, timezone
@@ -11,6 +12,17 @@ from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 from urllib.parse import urlparse, urlunparse
+
+DD_TRACE_ENABLED = os.getenv("DD_TRACE_ENABLED", "false").lower() == "true"
+
+if DD_TRACE_ENABLED:
+    try:
+        import ddtrace.auto  # noqa: F401
+        from ddtrace import tracer as dd_tracer
+    except ImportError:  # pragma: no cover - optional until Datadog is configured
+        dd_tracer = None
+else:  # pragma: no cover - exercised via env var in deployed environments
+    dd_tracer = None
 
 import psycopg
 from azure.monitor.opentelemetry import configure_azure_monitor
@@ -58,6 +70,19 @@ GITHUB_DASHBOARD_TOKEN = os.getenv("GITHUB_DASHBOARD_TOKEN", "")
 GITHUB_DEPLOY_QA_DEFAULT = os.getenv("GITHUB_DEPLOY_QA_DEFAULT", "false").lower() == "true"
 GITHUB_CI_WORKFLOW = os.getenv("GITHUB_CI_WORKFLOW", "ci-build.yml")
 GITHUB_RELEASE_WORKFLOW = os.getenv("GITHUB_RELEASE_WORKFLOW", "release-pipeline.yml")
+POSTGRES_ADMIN_URL = os.getenv("POSTGRES_ADMIN_URL", "")
+POSTGRES_ADMIN_DB = os.getenv("POSTGRES_ADMIN_DB", "postgres")
+AZURE_SUBSCRIPTION_ID = os.getenv("AZURE_SUBSCRIPTION_ID", "")
+AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP", "")
+AZURE_POSTGRES_SERVER_NAME = os.getenv("AZURE_POSTGRES_SERVER_NAME", "")
+AZURE_USE_MANAGED_IDENTITY = os.getenv("AZURE_USE_MANAGED_IDENTITY", "true").lower() == "true"
+POWERSHELL_EXECUTABLE = os.getenv("POWERSHELL_EXECUTABLE", "pwsh")
+POSTGRES_PLATFORM_ACTION_TIMEOUT_SECONDS = int(
+    os.getenv("POSTGRES_PLATFORM_ACTION_TIMEOUT_SECONDS", "1800")
+)
+DATADOG_SERVICE = os.getenv("DD_SERVICE", "pranathi-app")
+DATADOG_ENV = os.getenv("DD_ENV", os.getenv("ENV", "local"))
+DATADOG_VERSION = os.getenv("DD_VERSION", "")
 
 app = FastAPI(title="Pranathi App")
 app.add_middleware(
@@ -69,6 +94,10 @@ app.add_middleware(
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 logger = logging.getLogger(__name__)
+POSTGRES_ADMIN_SCRIPT_CANDIDATES = [
+    os.path.join(BASE_DIR, "scripts", "postgres_admin.ps1"),
+    os.path.join(os.path.dirname(BASE_DIR), "scripts", "postgres_admin.ps1"),
+]
 
 _redis_client = None
 _tenant_iot_clients = {}
@@ -87,11 +116,25 @@ def get_request_id() -> str:
 def get_trace_id() -> str:
     span = trace.get_current_span()
     if not span:
-        return ""
+        return get_datadog_trace_id()
     span_context = span.get_span_context()
     if not span_context or not span_context.is_valid:
-        return ""
+        return get_datadog_trace_id()
     return format(span_context.trace_id, "032x")
+
+
+def get_datadog_log_context() -> dict[str, str]:
+    if dd_tracer is None:
+        return {}
+    try:
+        return {key: str(value) for key, value in dd_tracer.get_log_correlation_context().items() if value}
+    except Exception:  # pragma: no cover - defensive for telemetry integrations
+        return {}
+
+
+def get_datadog_trace_id() -> str:
+    datadog_context = get_datadog_log_context()
+    return datadog_context.get("dd.trace_id", "")
 
 
 def log_event(level: int, event_name: str, **fields: Any):
@@ -101,13 +144,28 @@ def log_event(level: int, event_name: str, **fields: Any):
             "environment": os.getenv("ENV", "local"),
             "request_id": get_request_id(),
             "trace_id": get_trace_id(),
+            "service": DATADOG_SERVICE,
+            "service_version": DATADOG_VERSION,
             **fields,
+            **get_datadog_log_context(),
         }
     )
     logger.log(level, json.dumps(payload, default=str, sort_keys=True))
 
 
 def setup_telemetry():
+    if DD_TRACE_ENABLED:
+        if dd_tracer is None:
+            logger.warning("DD_TRACE_ENABLED is true but ddtrace is not installed.")
+            return
+        logger.info(
+            "Datadog tracing enabled for service=%s env=%s version=%s",
+            DATADOG_SERVICE,
+            DATADOG_ENV,
+            DATADOG_VERSION or "unset",
+        )
+        return
+
     if not APPINSIGHTS_CONNECTION_STRING:
         logger.warning("Application Insights connection string not set.")
         return
@@ -164,8 +222,87 @@ def get_admin_db_url() -> str:
     raise RuntimeError("Shared admin database URL is not configured")
 
 
-def get_conn(db_url: str):
-    return psycopg.connect(db_url)
+def get_postgres_admin_url() -> str:
+    if POSTGRES_ADMIN_URL:
+        return POSTGRES_ADMIN_URL
+    if DATABASE_URL:
+        return with_database_name(DATABASE_URL, POSTGRES_ADMIN_DB)
+    raise RuntimeError("PostgreSQL admin connection is not configured")
+
+
+def get_conn(db_url: str, *, autocommit: bool = False):
+    return psycopg.connect(db_url, autocommit=autocommit)
+
+
+def is_postgres_platform_configured() -> bool:
+    return bool(AZURE_SUBSCRIPTION_ID and AZURE_RESOURCE_GROUP and AZURE_POSTGRES_SERVER_NAME)
+
+
+def get_postgres_admin_script_path() -> str:
+    for candidate in POSTGRES_ADMIN_SCRIPT_CANDIDATES:
+        if os.path.exists(candidate):
+            return candidate
+    return POSTGRES_ADMIN_SCRIPT_CANDIDATES[0]
+
+
+def run_postgres_platform_action(action: str, **kwargs: str) -> dict | list:
+    if not is_postgres_platform_configured():
+        raise RuntimeError("Azure PostgreSQL platform actions are not configured.")
+    script_path = get_postgres_admin_script_path()
+    if not os.path.exists(script_path):
+        raise RuntimeError(f"PostgreSQL admin script not found at {script_path}.")
+
+    command = [
+        POWERSHELL_EXECUTABLE,
+        "-NoLogo",
+        "-NoProfile",
+        "-File",
+        script_path,
+        "-Action",
+        action,
+        "-SubscriptionId",
+        AZURE_SUBSCRIPTION_ID,
+        "-ResourceGroup",
+        AZURE_RESOURCE_GROUP,
+        "-ServerName",
+        AZURE_POSTGRES_SERVER_NAME,
+        "-UseManagedIdentity",
+        "$true" if AZURE_USE_MANAGED_IDENTITY else "$false",
+    ]
+
+    for key, value in kwargs.items():
+        if value is None or value == "":
+            continue
+        command.extend([f"-{key}", str(value)])
+
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=POSTGRES_PLATFORM_ACTION_TIMEOUT_SECONDS,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"{POWERSHELL_EXECUTABLE} is not installed in the web app container."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Azure PostgreSQL action timed out after {exc.timeout} seconds.") from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        stdout = (exc.stdout or "").strip()
+        detail = stderr or stdout or "Unknown PowerShell execution failure."
+        raise RuntimeError(detail) from exc
+
+    raw = (completed.stdout or "").strip()
+    if not raw:
+        return {}
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"PowerShell script returned non-JSON output: {raw}") from exc
 
 
 def hash_password(password: str) -> str:
@@ -385,6 +522,198 @@ def require_admin_session(request: Request):
     if not session_admin.get("email"):
         return None
     return session_admin
+
+
+def extract_database_name(db_url: str) -> str:
+    parsed = urlparse(db_url)
+    return parsed.path.lstrip("/")
+
+
+def get_managed_database_entries() -> list[dict[str, str | bool]]:
+    entries: list[dict[str, str | bool]] = []
+
+    try:
+        admin_db_url = get_admin_db_url()
+        admin_database_name = extract_database_name(admin_db_url)
+        if admin_database_name:
+            entries.append(
+                {
+                    "key": "admin",
+                    "label": "Shared admin database",
+                    "database_name": admin_database_name,
+                    "db_url": admin_db_url,
+                    "organization": "admin",
+                    "can_delete": False,
+                    "can_restore": False,
+                }
+            )
+    except Exception:
+        pass
+
+    for org in ("contoso", "litware"):
+        try:
+            db_url = get_db_url_for_org(org)
+        except Exception:
+            continue
+
+        database_name = extract_database_name(db_url)
+        if not database_name:
+            continue
+
+        entries.append(
+            {
+                "key": org,
+                "label": f"{org.title()} tenant database",
+                "database_name": database_name,
+                "db_url": db_url,
+                "organization": org,
+                "can_delete": True,
+                "can_restore": True,
+            }
+        )
+
+    return entries
+
+
+def get_managed_database_entry(database_key: str) -> dict[str, str | bool]:
+    for entry in get_managed_database_entries():
+        if entry["key"] == database_key:
+            return entry
+    raise RuntimeError(f"Unknown managed database: {database_key}")
+
+
+def load_database_dashboard_context(request: Request, msg: str = "", error: str = ""):
+    session_admin = require_admin_session(request)
+    if not session_admin:
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        managed_entries = get_managed_database_entries()
+    except Exception as exc:
+        managed_entries = []
+        error = error or str(exc)
+
+    server = {
+        "configured": is_postgres_platform_configured(),
+        "resource_group": AZURE_RESOURCE_GROUP,
+        "server_name": AZURE_POSTGRES_SERVER_NAME,
+        "subscription_id": AZURE_SUBSCRIPTION_ID,
+        "status": "Unavailable",
+        "sku": "",
+        "version": "",
+        "storage_mb": "",
+        "backup_retention_days": "",
+        "ha_state": "",
+        "fqdn": "",
+        "error": "",
+    }
+    backups = []
+
+    if server["configured"]:
+        try:
+            server_payload = run_postgres_platform_action("show-server")
+            if isinstance(server_payload, dict):
+                server["status"] = server_payload.get("state", "Unknown")
+                server["sku"] = ((server_payload.get("sku") or {}).get("name")) or ""
+                server["version"] = server_payload.get("version", "")
+                server["storage_mb"] = server_payload.get("storage", {}).get("storageSizeGb", "")
+                server["backup_retention_days"] = server_payload.get("backup", {}).get(
+                    "backupRetentionDays", ""
+                )
+                server["ha_state"] = (server_payload.get("highAvailability") or {}).get("state", "")
+                server["fqdn"] = server_payload.get("fullyQualifiedDomainName", "")
+        except Exception as exc:
+            server["error"] = str(exc)
+            record_exception_to_telemetry(exc, action="show_postgres_server")
+
+        try:
+            backup_payload = run_postgres_platform_action("list-backups")
+            if isinstance(backup_payload, list):
+                backups = backup_payload[:10]
+        except Exception as exc:
+            if not server["error"]:
+                server["error"] = str(exc)
+            record_exception_to_telemetry(exc, action="list_postgres_backups")
+
+    databases = []
+    for entry in managed_entries:
+        database_name = str(entry["database_name"])
+        database_info = {
+            "key": entry["key"],
+            "label": entry["label"],
+            "database_name": database_name,
+            "organization": entry["organization"],
+            "exists": False,
+            "size": "Unavailable",
+            "active_connections": 0,
+            "app_user_count": None,
+            "attendance_event_count": None,
+            "schema_ready": False,
+            "can_delete": entry["can_delete"],
+            "error": "",
+        }
+
+        try:
+            with get_conn(get_postgres_admin_url()) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (database_name,))
+                    database_info["exists"] = cur.fetchone() is not None
+
+                    if database_info["exists"]:
+                        cur.execute("SELECT pg_size_pretty(pg_database_size(%s))", (database_name,))
+                        size_row = cur.fetchone()
+                        database_info["size"] = size_row[0] if size_row and size_row[0] else "0 bytes"
+
+                        cur.execute(
+                            "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = %s",
+                            (database_name,),
+                        )
+                        connection_row = cur.fetchone()
+                        database_info["active_connections"] = (
+                            connection_row[0] if connection_row and connection_row[0] else 0
+                        )
+
+            if database_info["exists"]:
+                with get_conn(str(entry["db_url"])) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT
+                                to_regclass('public.app_users') IS NOT NULL,
+                                to_regclass('public.attendance_events') IS NOT NULL
+                            """
+                        )
+                        schema_row = cur.fetchone() or (False, False)
+                        app_users_exists, attendance_exists = schema_row
+                        database_info["schema_ready"] = bool(app_users_exists and attendance_exists)
+
+                        if app_users_exists:
+                            cur.execute("SELECT COUNT(*) FROM app_users")
+                            database_info["app_user_count"] = cur.fetchone()[0] or 0
+
+                        if attendance_exists:
+                            cur.execute("SELECT COUNT(*) FROM attendance_events")
+                            database_info["attendance_event_count"] = cur.fetchone()[0] or 0
+        except Exception as exc:
+            database_info["error"] = str(exc)
+            record_exception_to_telemetry(exc, database_name=database_name)
+
+        databases.append(database_info)
+
+    return templates.TemplateResponse(
+        "admin_database.html",
+        {
+            "request": request,
+            "admin_email": session_admin["email"],
+            "msg": msg,
+            "error": error,
+            "server": server,
+            "backups": backups,
+            "databases": databases,
+            "postgres_admin_configured": bool(POSTGRES_ADMIN_URL or DATABASE_URL),
+            "postgres_platform_configured": is_postgres_platform_configured(),
+        },
+    )
 
 
 class MobileCredentials(BaseModel):
@@ -898,7 +1227,13 @@ def load_admin_dashboard_context(request: Request, msg: str = "", error: str = "
 
     recent_auth_events = []
     recent_attendance_events = []
-    stats = {"login_count": 0, "logout_count": 0, "attendance_count": 0, "tenant_count": 0}
+    stats = {
+        "login_count": 0,
+        "logout_count": 0,
+        "attendance_count": 0,
+        "tenant_count": 0,
+        "database_count": len(get_managed_database_entries()),
+    }
 
     try:
         ensure_admin_schema()
@@ -1059,7 +1394,7 @@ def hello(name: str):
 
 @app.get("/signup", response_class=HTMLResponse)
 def signup_page(request: Request, msg: str = ""):
-    return RedirectResponse("/?msg=Employee+signup+has+moved+to+the+Android+app", status_code=303)
+    return RedirectResponse("/?msg=Employee+signup+has+moved+to+the+macOS+app", status_code=303)
 
 
 @app.post("/signup")
@@ -1077,7 +1412,7 @@ def signup(email: str = Form(...), password: str = Form(...), confirm_password: 
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, msg: str = ""):
-    return RedirectResponse("/?msg=Employee+login+has+moved+to+the+Android+app", status_code=303)
+    return RedirectResponse("/?msg=Employee+login+has+moved+to+the+macOS+app", status_code=303)
 
 
 @app.post("/login")
@@ -1087,12 +1422,12 @@ def login(request: Request, email: str = Form(...), password: str = Form(...)):
     except HTTPException as exc:
         return RedirectResponse(f"/?msg={exc.detail.replace(' ', '+')}", status_code=303)
 
-    return RedirectResponse("/?msg=Employee+login+has+moved+to+the+Android+app", status_code=303)
+    return RedirectResponse("/?msg=Employee+login+has+moved+to+the+macOS+app", status_code=303)
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, msg: str = "", error: str = ""):
-    return RedirectResponse("/?msg=Employee+dashboard+is+available+in+the+Android+app", status_code=303)
+    return RedirectResponse("/?msg=Employee+dashboard+is+available+in+the+macOS+app", status_code=303)
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -1128,6 +1463,11 @@ def admin_dashboard(request: Request, msg: str = "", error: str = ""):
 @app.get("/admin/github", response_class=HTMLResponse)
 def admin_github_dashboard(request: Request, msg: str = "", error: str = ""):
     return load_github_dashboard_context(request, msg=msg, error=error)
+
+
+@app.get("/admin/databases", response_class=HTMLResponse)
+def admin_database_dashboard(request: Request, msg: str = "", error: str = ""):
+    return load_database_dashboard_context(request, msg=msg, error=error)
 
 
 @app.post("/admin/github/approve")
@@ -1217,9 +1557,159 @@ def admin_github_reject(request: Request, pr_number: int = Form(...)):
         )
 
 
+@app.post("/admin/databases/ensure-schema")
+def admin_database_ensure_schema(request: Request, database_key: str = Form(...)):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        entry = get_managed_database_entry(database_key)
+        ensure_schema(str(entry["db_url"]))
+        message = f"{entry['label']} schema verified."
+        return RedirectResponse(f"/admin/databases?msg={urllib_parse.quote_plus(message)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, database_key=database_key, action="ensure_schema")
+        return RedirectResponse(
+            f"/admin/databases?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
+@app.post("/admin/databases/server/backup")
+def admin_database_server_backup(request: Request, backup_name: str = Form(...)):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        run_postgres_platform_action("create-backup", BackupName=backup_name)
+        message = f"Backup {backup_name} started for {AZURE_POSTGRES_SERVER_NAME}."
+        return RedirectResponse(f"/admin/databases?msg={urllib_parse.quote_plus(message)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="create_backup")
+        return RedirectResponse(
+            f"/admin/databases?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
+@app.post("/admin/databases/server/restore")
+def admin_database_server_restore(
+    request: Request,
+    target_server_name: str = Form(...),
+    restore_time_utc: str = Form(...),
+):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        run_postgres_platform_action(
+            "restore-server",
+            TargetServerName=target_server_name,
+            RestoreTimeUtc=restore_time_utc,
+        )
+        message = (
+            f"Point-in-time restore started for {AZURE_POSTGRES_SERVER_NAME} into {target_server_name}."
+        )
+        return RedirectResponse(f"/admin/databases?msg={urllib_parse.quote_plus(message)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="restore_server")
+        return RedirectResponse(
+            f"/admin/databases?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
+@app.post("/admin/databases/server/start")
+def admin_database_server_start(request: Request):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        run_postgres_platform_action("start-server")
+        message = f"Start requested for {AZURE_POSTGRES_SERVER_NAME}."
+        return RedirectResponse(f"/admin/databases?msg={urllib_parse.quote_plus(message)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="start_server")
+        return RedirectResponse(
+            f"/admin/databases?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
+@app.post("/admin/databases/server/stop")
+def admin_database_server_stop(request: Request):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        run_postgres_platform_action("stop-server")
+        message = f"Stop requested for {AZURE_POSTGRES_SERVER_NAME}."
+        return RedirectResponse(f"/admin/databases?msg={urllib_parse.quote_plus(message)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="stop_server")
+        return RedirectResponse(
+            f"/admin/databases?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
+@app.post("/admin/databases/server/restart")
+def admin_database_server_restart(request: Request):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        run_postgres_platform_action("restart-server")
+        message = f"Restart requested for {AZURE_POSTGRES_SERVER_NAME}."
+        return RedirectResponse(f"/admin/databases?msg={urllib_parse.quote_plus(message)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="restart_server")
+        return RedirectResponse(
+            f"/admin/databases?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
+@app.post("/admin/databases/server/delete")
+def admin_database_server_delete(request: Request):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        run_postgres_platform_action("delete-server")
+        message = f"Delete requested for server {AZURE_POSTGRES_SERVER_NAME}."
+        return RedirectResponse(f"/admin/databases?msg={urllib_parse.quote_plus(message)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="delete_server")
+        return RedirectResponse(
+            f"/admin/databases?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
+@app.post("/admin/databases/database/delete")
+def admin_database_delete(request: Request, database_key: str = Form(...)):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        entry = get_managed_database_entry(database_key)
+        if entry["organization"] == "admin":
+            raise RuntimeError("Delete is disabled for the shared admin database.")
+        run_postgres_platform_action("delete-database", DatabaseName=str(entry["database_name"]))
+        message = f"{entry['label']} delete requested on {AZURE_POSTGRES_SERVER_NAME}."
+        return RedirectResponse(f"/admin/databases?msg={urllib_parse.quote_plus(message)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, database_key=database_key, action="delete_database")
+        return RedirectResponse(
+            f"/admin/databases?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
 @app.post("/attendance/punch")
 def attendance_punch(request: Request, action: str = Form(...)):
-    return RedirectResponse("/?msg=Attendance+punching+has+moved+to+the+Android+app", status_code=303)
+    return RedirectResponse("/?msg=Attendance+punching+has+moved+to+the+macOS+app", status_code=303)
 
 
 @app.get("/logout")

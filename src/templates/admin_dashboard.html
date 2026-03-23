@@ -47,6 +47,10 @@
           <span class="stat-label">GitHub approvals</span>
           <strong class="stat-value">{{ "Ready" if github_configured else "Setup" }}</strong>
         </article>
+        <article class="stat-card">
+          <span class="stat-label">Managed databases</span>
+          <strong class="stat-value">{{ stats.database_count }}</strong>
+        </article>
       </section>
 
       <section class="card">
@@ -61,6 +65,20 @@
           and then start the release workflow.
         </p>
         <a class="btn" href="/admin/github" target="_blank" rel="noreferrer">Open GitHub approvals</a>
+      </section>
+
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">PostgreSQL operations</p>
+            <h2>Tenant database controls</h2>
+          </div>
+        </div>
+        <p>
+          Review the shared admin database plus tenant databases, then run actions like schema repair, clean restore,
+          or database deletion from a separate admin tab.
+        </p>
+        <a class="btn" href="/admin/databases" target="_blank" rel="noreferrer">Open database controls</a>
       </section>
 
       <section class="dashboard-grid admin-grid">

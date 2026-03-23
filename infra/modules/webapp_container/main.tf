@@ -81,6 +81,10 @@ locals {
     "DATABASE_URL"                        = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_connection_string.versionless_id})"
     "CONTOSO_DATABASE_URL"                = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_db_connection_string.versionless_id})"
     "LITWARE_DATABASE_URL"                = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_db_connection_string.versionless_id})"
+    "AZURE_SUBSCRIPTION_ID"               = data.azurerm_client_config.current.subscription_id
+    "AZURE_RESOURCE_GROUP"                = data.azurerm_resource_group.rg.name
+    "AZURE_POSTGRES_SERVER_NAME"          = local.postgresql_server_name
+    "AZURE_USE_MANAGED_IDENTITY"          = "true"
     "REDIS_URL"                           = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.redis_url.versionless_id})"
     "APIM_LOGIN_PATH"                     = "/auth/login"
     "APIM_SIGNUP_PATH"                    = "/auth/signup"
@@ -94,6 +98,21 @@ locals {
   optional_app_insights_settings = var.application_insights_connection_string != "" ? {
     "APPLICATIONINSIGHTS_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.application_insights_connection_string[0].versionless_id})"
   } : {}
+  optional_datadog_settings = merge(
+    {
+      "DD_SERVICE"        = var.dd_service != "" ? var.dd_service : var.webapp_name
+      "DD_ENV"            = var.dd_env != "" ? var.dd_env : var.env_name
+      "DD_VERSION"        = var.dd_version
+      "DD_TRACE_ENABLED"  = tostring(var.dd_trace_enabled)
+      "DD_LOGS_INJECTION" = tostring(var.dd_logs_injection)
+    },
+    var.dd_agent_host != "" ? {
+      "DD_AGENT_HOST" = var.dd_agent_host
+    } : {},
+    var.dd_trace_agent_url != "" ? {
+      "DD_TRACE_AGENT_URL" = var.dd_trace_agent_url
+    } : {}
+  )
   optional_github_dashboard_settings = var.github_dashboard_token != "" ? {
     "GITHUB_DASHBOARD_TOKEN" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.github_dashboard_token[0].versionless_id})"
     "GITHUB_REPOSITORY"      = "Pranathi0203/praanthiapp"
@@ -291,6 +310,7 @@ resource "azurerm_linux_web_app" "app" {
     local.optional_app_settings,
     local.optional_litware_app_settings,
     local.optional_app_insights_settings,
+    local.optional_datadog_settings,
     local.optional_github_dashboard_settings,
     var.app_settings
   )
@@ -338,6 +358,7 @@ resource "azurerm_linux_web_app_slot" "staging" {
     local.optional_app_settings,
     local.optional_litware_app_settings,
     local.optional_app_insights_settings,
+    local.optional_datadog_settings,
     local.optional_github_dashboard_settings,
     var.app_settings,
     { "ENV" = "${var.env_name}-staging" }
@@ -353,6 +374,18 @@ resource "azurerm_role_assignment" "acr_pull" {
 resource "azurerm_role_assignment" "acr_pull_staging" {
   scope                = data.azurerm_container_registry.acr.id
   role_definition_name = "AcrPull"
+  principal_id         = azurerm_linux_web_app_slot.staging.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "webapp_rg_contributor" {
+  scope                = data.azurerm_resource_group.rg.id
+  role_definition_name = "Contributor"
+  principal_id         = azurerm_linux_web_app.app.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "webapp_staging_rg_contributor" {
+  scope                = data.azurerm_resource_group.rg.id
+  role_definition_name = "Contributor"
   principal_id         = azurerm_linux_web_app_slot.staging.identity[0].principal_id
 }
 

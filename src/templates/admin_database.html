@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Database Controls</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="container container-wide">
+      <section class="hero admin-hero">
+        <div>
+          <p class="eyebrow">Admin App</p>
+          <h1>PostgreSQL database controls</h1>
+          <p>
+            Manage tenant databases from the web dashboard.<br />
+            Signed in as <strong>{{ admin_email }}</strong>
+          </p>
+        </div>
+        <div class="hero-actions">
+          <a class="icon-btn" href="/admin/databases" title="Refresh databases" aria-label="Refresh databases">
+            &#x21bb;
+          </a>
+          <a class="btn secondary" href="/admin/dashboard">Back to dashboard</a>
+          <a class="btn" href="/admin/logout">Logout</a>
+        </div>
+      </section>
+
+      {% if msg %}<p class="ok banner">{{ msg }}</p>{% endif %}
+      {% if error %}<p class="error banner">{{ error }}</p>{% endif %}
+
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Operations</p>
+            <h2>Azure PostgreSQL platform actions</h2>
+          </div>
+        </div>
+
+        {% if postgres_platform_configured %}
+        <p>
+          These controls now call Linux PowerShell scripts, which use Azure CLI against your PostgreSQL Flexible Server.
+          Point-in-time restore creates a new server from Azure backups, while server actions manage the live Flexible
+          Server instance itself.
+        </p>
+        <p>
+          Database delete is executed through the Azure platform CLI. Schema repair remains available for app table
+          recovery when you need it.
+        </p>
+        {% else %}
+        <p>
+          Add <code>AZURE_SUBSCRIPTION_ID</code>, <code>AZURE_RESOURCE_GROUP</code>, and
+          <code>AZURE_POSTGRES_SERVER_NAME</code> so the dashboard can run Azure platform operations through PowerShell.
+        </p>
+        {% endif %}
+      </section>
+
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Flexible Server</p>
+            <h2>Server overview and controls</h2>
+          </div>
+        </div>
+
+        {% if postgres_platform_configured %}
+        <p>
+          Subscription: <strong>{{ server.subscription_id }}</strong><br />
+          Resource group: <strong>{{ server.resource_group }}</strong><br />
+          Server name: <strong>{{ server.server_name }}</strong>
+        </p>
+        <p>
+          Status: <strong>{{ server.status }}</strong><br />
+          SKU: <strong>{{ server.sku or "-" }}</strong><br />
+          Version: <strong>{{ server.version or "-" }}</strong><br />
+          Storage (GB): <strong>{{ server.storage_mb or "-" }}</strong><br />
+          Backup retention: <strong>{{ server.backup_retention_days or "-" }}</strong><br />
+          HA state: <strong>{{ server.ha_state or "-" }}</strong><br />
+          FQDN: <strong>{{ server.fqdn or "-" }}</strong>
+        </p>
+        {% if server.error %}<p class="error">{{ server.error }}</p>{% endif %}
+
+        <form method="post" action="/admin/databases/server/start" class="inline-form">
+          <button class="btn compact-btn secondary" type="submit">Start server</button>
+        </form>
+        <form method="post" action="/admin/databases/server/stop" class="inline-form">
+          <button class="btn compact-btn secondary" type="submit">Stop server</button>
+        </form>
+        <form method="post" action="/admin/databases/server/restart" class="inline-form">
+          <button class="btn compact-btn" type="submit">Restart server</button>
+        </form>
+        <form method="post" action="/admin/databases/server/delete" class="inline-form">
+          <button class="btn danger compact-btn" type="submit">Delete server</button>
+        </form>
+        {% else %}
+        <p>Azure platform controls are not configured yet.</p>
+        {% endif %}
+      </section>
+
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Backup and restore</p>
+            <h2>Backup jobs and point-in-time restore</h2>
+          </div>
+        </div>
+
+        {% if postgres_platform_configured %}
+        <form method="post" action="/admin/databases/server/backup" class="stacked-form">
+          <label>
+            Backup name
+            <input type="text" name="backup_name" placeholder="manual-backup-20260322-1200" required />
+          </label>
+          <button class="btn" type="submit">Create backup</button>
+        </form>
+
+        <form method="post" action="/admin/databases/server/restore" class="stacked-form">
+          <label>
+            Target restored server name
+            <input type="text" name="target_server_name" placeholder="pranathi-dev-pg-restore-01" required />
+          </label>
+          <label>
+            Restore time UTC
+            <input type="text" name="restore_time_utc" placeholder="2026-03-22T12:00:00Z" required />
+          </label>
+          <p class="eyebrow note-copy">
+            Azure Flexible Server point-in-time restore creates a new server. It does not overwrite the current server.
+          </p>
+          <button class="btn" type="submit">Start PITR restore</button>
+        </form>
+
+        {% if backups %}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Backup</th>
+                <th>Type</th>
+                <th>Completed</th>
+                <th>Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for backup in backups %}
+              <tr>
+                <td><strong>{{ backup.name or backup.id or "-" }}</strong></td>
+                <td>{{ backup.backupType or "-" }}</td>
+                <td>{{ backup.completedTime or backup.creationTime or "-" }}</td>
+                <td>{{ backup.source or "-" }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p>No recent backup records were returned.</p>
+        {% endif %}
+        {% else %}
+        <p>Backup and restore actions will appear once Azure platform settings are configured.</p>
+        {% endif %}
+      </section>
+
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Managed databases</p>
+            <h2>Database inventory and actions</h2>
+          </div>
+        </div>
+
+        {% if databases %}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Database</th>
+                <th>Status</th>
+                <th>Usage</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for db in databases %}
+              <tr>
+                <td>
+                  <strong>{{ db.label }}</strong><br />
+                  <code>{{ db.database_name }}</code>
+                  {% if db.organization != "admin" %}<span class="chip">{{ db.organization|upper }}</span>{% endif %}
+                </td>
+                <td>
+                  {% if db.exists %}
+                  <span class="chip">Online</span>
+                  {% else %}
+                  <span class="chip chip-muted">Missing</span>
+                  {% endif %}
+                  <br />
+                  Schema ready: <strong>{{ "Yes" if db.schema_ready else "No" }}</strong>
+                  {% if db.error %}<br /><span class="error">{{ db.error }}</span>{% endif %}
+                </td>
+                <td>
+                  Size: <strong>{{ db.size }}</strong><br />
+                  Active connections: <strong>{{ db.active_connections }}</strong><br />
+                  App users: <strong>{{ db.app_user_count if db.app_user_count is not none else "-" }}</strong><br />
+                  Attendance events:
+                  <strong>{{ db.attendance_event_count if db.attendance_event_count is not none else "-" }}</strong>
+                </td>
+                <td>
+                  {% if db.organization != "admin" %}
+                  <form method="post" action="/admin/databases/ensure-schema" class="inline-form">
+                    <input type="hidden" name="database_key" value="{{ db.key }}" />
+                    <button class="btn compact-btn secondary" type="submit">Ensure schema</button>
+                  </form>
+                  <form method="post" action="/admin/databases/database/delete" class="inline-form">
+                    <input type="hidden" name="database_key" value="{{ db.key }}" />
+                    <button class="btn danger compact-btn" type="submit">Delete</button>
+                  </form>
+                  {% else %}
+                  <span class="chip chip-muted">Read only</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p>No managed databases are configured yet.</p>
+        {% endif %}
+      </section>
+
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Suggested next actions</p>
+            <h2>What we can add after this</h2>
+          </div>
+        </div>
+        <ul class="plain-list">
+          <li>Restore from deleted-server backups using a second PowerShell action path</li>
+          <li>Server parameter updates such as retention, SKU, or maintenance windows</li>
+          <li>Confirmation prompts and audit logging for destructive Azure operations</li>
+          <li>Async job tracking so long-running restore requests do not block the web request</li>
+        </ul>
+      </section>
+    </main>
+  </body>
+</html>
