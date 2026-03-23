@@ -15,10 +15,30 @@ param(
     [string]$RestoreTimeUtc,
     [string]$BackupName,
     [string]$DatabaseName,
-    [bool]$UseManagedIdentity = $true
+    [string]$UseManagedIdentity = "true"
 )
 
 $ErrorActionPreference = "Stop"
+
+function ConvertTo-Boolean {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+
+    switch ($Value.Trim().ToLowerInvariant()) {
+        "true" { return $true }
+        "false" { return $false }
+        "1" { return $true }
+        "0" { return $false }
+        "$true" { return $true }
+        "$false" { return $false }
+        default {
+            throw "Invalid boolean value: $Value"
+        }
+    }
+}
 
 function Ensure-AzCli {
     if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
@@ -29,7 +49,7 @@ function Ensure-AzCli {
 function Connect-Azure {
     $account = az account show --output json --only-show-errors 2>$null
     if (-not $account) {
-        if (-not $UseManagedIdentity) {
+        if (-not (ConvertTo-Boolean $UseManagedIdentity)) {
             throw "Azure CLI is not logged in and managed identity login is disabled."
         }
 
