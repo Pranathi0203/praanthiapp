@@ -37,17 +37,7 @@
           </div>
         </div>
 
-        {% if postgres_platform_configured %}
-        <p>
-          These controls now call Linux PowerShell scripts, which use Azure CLI against your PostgreSQL Flexible Server.
-          Point-in-time restore creates a new server from Azure backups, while server actions manage the live Flexible
-          Server instance itself.
-        </p>
-        <p>
-          Database delete is executed through the Azure platform CLI. Schema repair remains available for app table
-          recovery when you need it.
-        </p>
-        {% else %}
+        {% if not postgres_platform_configured %}
         <p>
           Add <code>AZURE_SUBSCRIPTION_ID</code>, <code>AZURE_RESOURCE_GROUP</code>, and
           <code>AZURE_POSTGRES_SERVER_NAME</code> so the dashboard can run Azure platform operations through PowerShell.
@@ -228,20 +218,6 @@
         {% endif %}
       </section>
 
-      <section class="card">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">Suggested next actions</p>
-            <h2>What we can add after this</h2>
-          </div>
-        </div>
-        <ul class="plain-list">
-          <li>Restore from deleted-server backups using a second PowerShell action path</li>
-          <li>Server parameter updates such as retention, SKU, or maintenance windows</li>
-          <li>Confirmation prompts and audit logging for destructive Azure operations</li>
-          <li>Async job tracking so long-running restore requests do not block the web request</li>
-        </ul>
-      </section>
     </main>
   </body>
 </html>
