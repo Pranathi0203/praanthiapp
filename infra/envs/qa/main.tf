@@ -36,7 +36,15 @@ module "app" {
   litware_device_connection_string       = var.litware_device_connection_string
   iothub_eventhub_connection_string      = var.iothub_eventhub_connection_string
   application_insights_connection_string = var.application_insights_connection_string
+  dd_service                             = var.dd_service
+  dd_env                                 = var.dd_env
+  dd_version                             = var.dd_version
+  dd_trace_enabled                       = var.dd_trace_enabled
+  dd_logs_injection                      = var.dd_logs_injection
+  dd_agent_host                          = var.dd_agent_host
+  dd_trace_agent_url                     = var.dd_trace_agent_url
   github_dashboard_token                 = var.github_dashboard_token
+  alert_email                            = var.alert_email
 
   # Optional extra settings
   app_settings = {

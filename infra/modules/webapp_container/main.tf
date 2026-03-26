@@ -437,6 +437,107 @@ resource "azurerm_postgresql_flexible_server_database" "litware" {
   collation = "en_US.utf8"
 }
 
+# ─── PostgreSQL monitoring parameters ──────────────────────────────────────────
+# These parameters enable logging, query stats, and wait-event sampling needed
+# for Azure Monitor alerts (Layer 2) and Datadog Database Monitoring (Layer 3).
+
+# Allow pg_stat_statements to be created in databases (Azure extension allowlist).
+resource "azurerm_postgresql_flexible_server_configuration" "pg_azure_extensions" {
+  name      = "azure.extensions"
+  server_id = azurerm_postgresql_flexible_server.db.id
+  value     = "pg_stat_statements"
+}
+
+# Load pg_stat_statements at server startup.
+# NOTE: changing shared_preload_libraries triggers an automatic server restart.
+resource "azurerm_postgresql_flexible_server_configuration" "pg_shared_preload_libraries" {
+  name      = "shared_preload_libraries"
+  server_id = azurerm_postgresql_flexible_server.db.id
+  value     = "pg_stat_statements"
+}
+
+# Track all statements including those inside functions and stored procedures.
+resource "azurerm_postgresql_flexible_server_configuration" "pg_stat_statements_track" {
+  name       = "pg_stat_statements.track"
+  server_id  = azurerm_postgresql_flexible_server.db.id
+  value      = "all"
+  depends_on = [azurerm_postgresql_flexible_server_configuration.pg_shared_preload_libraries]
+}
+
+# Log any query exceeding this duration in milliseconds.
+# Feeds into the "slow query" alert and the Query Store.
+resource "azurerm_postgresql_flexible_server_configuration" "pg_log_min_duration_statement" {
+  name      = "log_min_duration_statement"
+  server_id = azurerm_postgresql_flexible_server.db.id
+  value     = tostring(var.pg_log_min_duration_ms)
+}
+
+# Log checkpoint activity — indicates WAL pressure or I/O saturation.
+resource "azurerm_postgresql_flexible_server_configuration" "pg_log_checkpoints" {
+  name      = "log_checkpoints"
+  server_id = azurerm_postgresql_flexible_server.db.id
+  value     = "on"
+}
+
+# Log every new connection — lets you see connection spikes and churn.
+resource "azurerm_postgresql_flexible_server_configuration" "pg_log_connections" {
+  name      = "log_connections"
+  server_id = azurerm_postgresql_flexible_server.db.id
+  value     = "on"
+}
+
+# Log every disconnection — pairs with log_connections to detect pool exhaustion.
+resource "azurerm_postgresql_flexible_server_configuration" "pg_log_disconnections" {
+  name      = "log_disconnections"
+  server_id = azurerm_postgresql_flexible_server.db.id
+  value     = "on"
+}
+
+# Log lock waits exceeding deadlock_timeout — surfaces contention before it escalates.
+resource "azurerm_postgresql_flexible_server_configuration" "pg_log_lock_waits" {
+  name      = "log_lock_waits"
+  server_id = azurerm_postgresql_flexible_server.db.id
+  value     = "on"
+}
+
+# How long a transaction waits for a lock (ms) before deadlock detection runs.
+# Lowering this makes deadlocks detected and logged faster.
+resource "azurerm_postgresql_flexible_server_configuration" "pg_deadlock_timeout" {
+  name      = "deadlock_timeout"
+  server_id = azurerm_postgresql_flexible_server.db.id
+  value     = tostring(var.pg_deadlock_timeout_ms)
+}
+
+# Log creation of any temporary file above this size (KB). 0 = log all temp files.
+# Temp files mean a sort or hash join spilled to disk — usually a missing index.
+resource "azurerm_postgresql_flexible_server_configuration" "pg_log_temp_files" {
+  name      = "log_temp_files"
+  server_id = azurerm_postgresql_flexible_server.db.id
+  value     = tostring(var.pg_log_temp_files_kb)
+}
+
+# Azure Query Store — persists query performance history for trend analysis
+# and surfaces regressions across deployments.
+resource "azurerm_postgresql_flexible_server_configuration" "pg_qs_query_capture_mode" {
+  name      = "pg_qs.query_capture_mode"
+  server_id = azurerm_postgresql_flexible_server.db.id
+  value     = "all"
+}
+
+resource "azurerm_postgresql_flexible_server_configuration" "pg_qs_retention_period" {
+  name      = "pg_qs.retention_period_in_days"
+  server_id = azurerm_postgresql_flexible_server.db.id
+  value     = tostring(var.pg_qs_retention_days)
+}
+
+# Azure wait event sampling — shows what queries are blocked on (locks, I/O, CPU).
+# Prerequisite for the "Intelligent Performance" blade in the Azure portal.
+resource "azurerm_postgresql_flexible_server_configuration" "pgms_wait_sampling_query_capture_mode" {
+  name      = "pgms_wait_sampling.query_capture_mode"
+  server_id = azurerm_postgresql_flexible_server.db.id
+  value     = "all"
+}
+
 resource "azurerm_key_vault" "app" {
   name                = local.key_vault_name
   resource_group_name = data.azurerm_resource_group.rg.name
@@ -784,6 +885,336 @@ resource "azurerm_key_vault_secret" "github_dashboard_token" {
   value        = var.github_dashboard_token
   key_vault_id = azurerm_key_vault.app.id
   depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
+}
+
+# ─── Database Monitoring Alerts ────────────────────────────────────────────────
+# All alert resources are conditional on alert_email being set.
+# Set var.alert_email in the environment to enable alerting.
+
+resource "azurerm_monitor_action_group" "db_alerts" {
+  count               = var.alert_email != "" ? 1 : 0
+  name                = "${var.webapp_name}-${var.env_name}-db-ag"
+  resource_group_name = data.azurerm_resource_group.rg.name
+  short_name          = "db-alerts"
+
+  email_receiver {
+    name                    = "ops-email"
+    email_address           = var.alert_email
+    use_common_alert_schema = true
+  }
+
+  dynamic "webhook_receiver" {
+    for_each = var.alert_webhook_url != "" ? [1] : []
+    content {
+      name                    = "ops-webhook"
+      service_uri             = var.alert_webhook_url
+      use_common_alert_schema = true
+    }
+  }
+}
+
+# ── Metric Alerts ──────────────────────────────────────────────────────────────
+# These fire on Azure platform numbers directly — no logs needed.
+
+# Fires when active connections approach the B1ms hard limit (~50).
+# Root cause: no connection pooling — each FastAPI/Function request opens a new connection.
+resource "azurerm_monitor_metric_alert" "pg_high_connections" {
+  count               = var.alert_email != "" ? 1 : 0
+  name                = "${var.webapp_name}-${var.env_name}-pg-connections"
+  resource_group_name = data.azurerm_resource_group.rg.name
+  scopes              = [azurerm_postgresql_flexible_server.db.id]
+  description         = "PostgreSQL active connections above ${var.pg_alert_max_connections}. Risk of FATAL: too many connections."
+  severity            = 2
+  frequency           = "PT1M"
+  window_size         = "PT5M"
+
+  criteria {
+    metric_namespace = "Microsoft.DBforPostgreSQL/flexibleServers"
+    metric_name      = "active_connections"
+    aggregation      = "Average"
+    operator         = "GreaterThan"
+    threshold        = var.pg_alert_max_connections
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.db_alerts[0].id
+  }
+}
+
+# Fires when CPU is sustained high — indicates a runaway query or missing index causing full scans.
+resource "azurerm_monitor_metric_alert" "pg_high_cpu" {
+  count               = var.alert_email != "" ? 1 : 0
+  name                = "${var.webapp_name}-${var.env_name}-pg-cpu"
+  resource_group_name = data.azurerm_resource_group.rg.name
+  scopes              = [azurerm_postgresql_flexible_server.db.id]
+  description         = "PostgreSQL CPU above ${var.pg_alert_cpu_threshold}% for 15 minutes."
+  severity            = 2
+  frequency           = "PT5M"
+  window_size         = "PT15M"
+
+  criteria {
+    metric_namespace = "Microsoft.DBforPostgreSQL/flexibleServers"
+    metric_name      = "cpu_percent"
+    aggregation      = "Average"
+    operator         = "GreaterThan"
+    threshold        = var.pg_alert_cpu_threshold
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.db_alerts[0].id
+  }
+}
+
+# Fires when storage is filling up — attendance_events grows unbounded without archival.
+resource "azurerm_monitor_metric_alert" "pg_high_storage" {
+  count               = var.alert_email != "" ? 1 : 0
+  name                = "${var.webapp_name}-${var.env_name}-pg-storage"
+  resource_group_name = data.azurerm_resource_group.rg.name
+  scopes              = [azurerm_postgresql_flexible_server.db.id]
+  description         = "PostgreSQL storage above ${var.pg_alert_storage_threshold}%."
+  severity            = 1
+  frequency           = "PT15M"
+  window_size         = "PT1H"
+
+  criteria {
+    metric_namespace = "Microsoft.DBforPostgreSQL/flexibleServers"
+    metric_name      = "storage_percent"
+    aggregation      = "Average"
+    operator         = "GreaterThan"
+    threshold        = var.pg_alert_storage_threshold
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.db_alerts[0].id
+  }
+}
+
+# Fires when I/O is saturated — symptom of sequential scans from missing indexes.
+resource "azurerm_monitor_metric_alert" "pg_high_iops" {
+  count               = var.alert_email != "" ? 1 : 0
+  name                = "${var.webapp_name}-${var.env_name}-pg-iops"
+  resource_group_name = data.azurerm_resource_group.rg.name
+  scopes              = [azurerm_postgresql_flexible_server.db.id]
+  description         = "PostgreSQL IOPS above ${var.pg_alert_iops_threshold}%."
+  severity            = 2
+  frequency           = "PT5M"
+  window_size         = "PT5M"
+
+  criteria {
+    metric_namespace = "Microsoft.DBforPostgreSQL/flexibleServers"
+    metric_name      = "iops_percent"
+    aggregation      = "Average"
+    operator         = "GreaterThan"
+    threshold        = var.pg_alert_iops_threshold
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.db_alerts[0].id
+  }
+}
+
+# Fires on repeated failed connections — could be bad credentials, SSL issues, or pool exhaustion.
+resource "azurerm_monitor_metric_alert" "pg_failed_connections" {
+  count               = var.alert_email != "" ? 1 : 0
+  name                = "${var.webapp_name}-${var.env_name}-pg-conn-failures"
+  resource_group_name = data.azurerm_resource_group.rg.name
+  scopes              = [azurerm_postgresql_flexible_server.db.id]
+  description         = "PostgreSQL connection failures spiking."
+  severity            = 2
+  frequency           = "PT1M"
+  window_size         = "PT5M"
+
+  criteria {
+    metric_namespace = "Microsoft.DBforPostgreSQL/flexibleServers"
+    metric_name      = "connections_failed"
+    aggregation      = "Total"
+    operator         = "GreaterThan"
+    threshold        = 5
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.db_alerts[0].id
+  }
+}
+
+# ── Log-Based Alerts (Scheduled Query Rules) ───────────────────────────────────
+# These run KQL queries against Log Analytics every 5 minutes.
+# Requires Layer 1 server parameters to be applied first.
+
+# Fires the moment a deadlock is detected in PostgreSQL logs.
+# Enabled by: log_lock_waits = on, deadlock_timeout = 1000
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "pg_deadlock" {
+  count               = var.alert_email != "" ? 1 : 0
+  name                = "${var.webapp_name}-${var.env_name}-pg-deadlock"
+  resource_group_name = data.azurerm_resource_group.rg.name
+  location            = data.azurerm_resource_group.rg.location
+  description         = "A deadlock was detected in PostgreSQL. Check attendance_events concurrent writes."
+  severity            = 1
+  evaluation_frequency = "PT5M"
+  window_duration      = "PT5M"
+  scopes               = [azurerm_log_analytics_workspace.observability.id]
+
+  criteria {
+    query                   = <<-QUERY
+      AzureDiagnostics
+      | where ResourceProvider == "MICROSOFT.DBFORPOSTGRESQL"
+      | where Category == "PostgreSQLLogs"
+      | where Message contains "deadlock detected"
+    QUERY
+    time_aggregation_method = "Count"
+    threshold               = 0
+    operator                = "GreaterThan"
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.db_alerts[0].id]
+  }
+}
+
+# Fires when 3 or more queries exceed 5 seconds in a 5-minute window.
+# Enabled by: log_min_duration_statement = 1000 (logs all queries > 1s)
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "pg_slow_query" {
+  count               = var.alert_email != "" ? 1 : 0
+  name                = "${var.webapp_name}-${var.env_name}-pg-slow-query"
+  resource_group_name = data.azurerm_resource_group.rg.name
+  location            = data.azurerm_resource_group.rg.location
+  description         = "Multiple queries exceeding 5 seconds. Likely missing index or full table scan."
+  severity            = 2
+  evaluation_frequency = "PT5M"
+  window_duration      = "PT5M"
+  scopes               = [azurerm_log_analytics_workspace.observability.id]
+
+  criteria {
+    query                   = <<-QUERY
+      AzureDiagnostics
+      | where ResourceProvider == "MICROSOFT.DBFORPOSTGRESQL"
+      | where Category == "PostgreSQLLogs"
+      | where Message contains "duration: "
+      | parse Message with * "duration: " dur_str " ms" *
+      | where todouble(dur_str) >= 5000
+    QUERY
+    time_aggregation_method = "Count"
+    threshold               = 2
+    operator                = "GreaterThan"
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.db_alerts[0].id]
+  }
+}
+
+# Fires when any transaction is logged waiting for a lock.
+# Enabled by: log_lock_waits = on, deadlock_timeout = 1000
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "pg_lock_wait" {
+  count               = var.alert_email != "" ? 1 : 0
+  name                = "${var.webapp_name}-${var.env_name}-pg-lock-wait"
+  resource_group_name = data.azurerm_resource_group.rg.name
+  location            = data.azurerm_resource_group.rg.location
+  description         = "Lock wait detected in PostgreSQL. Possible contention on attendance_events or app_users."
+  severity            = 2
+  evaluation_frequency = "PT5M"
+  window_duration      = "PT5M"
+  scopes               = [azurerm_log_analytics_workspace.observability.id]
+
+  criteria {
+    query                   = <<-QUERY
+      AzureDiagnostics
+      | where ResourceProvider == "MICROSOFT.DBFORPOSTGRESQL"
+      | where Category == "PostgreSQLLogs"
+      | where Message contains "still waiting for lock"
+          or Message contains "lock wait timeout"
+    QUERY
+    time_aggregation_method = "Count"
+    threshold               = 0
+    operator                = "GreaterThan"
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.db_alerts[0].id]
+  }
+}
+
+# Fires when the application starts hitting connection limits.
+# Root cause: no connection pooling in get_conn() — each request opens a new psycopg connection.
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "app_connection_exhaustion" {
+  count               = var.alert_email != "" ? 1 : 0
+  name                = "${var.webapp_name}-${var.env_name}-pg-conn-exhaustion"
+  resource_group_name = data.azurerm_resource_group.rg.name
+  location            = data.azurerm_resource_group.rg.location
+  description         = "Application receiving FATAL: too many connections from PostgreSQL."
+  severity            = 1
+  evaluation_frequency = "PT5M"
+  window_duration      = "PT5M"
+  scopes               = [azurerm_log_analytics_workspace.observability.id]
+
+  criteria {
+    query                   = <<-QUERY
+      AppTraces
+      | where Message contains "too many connections"
+          or Message contains "remaining connection slots"
+    QUERY
+    time_aggregation_method = "Count"
+    threshold               = 0
+    operator                = "GreaterThan"
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.db_alerts[0].id]
+  }
+}
+
+# Fires when the attendance Azure Function fails to write events to PostgreSQL.
+# Covers: deadlock kills, connection errors, schema lock timeouts from ensure_schema().
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "attendance_processor_failures" {
+  count               = var.alert_email != "" ? 1 : 0
+  name                = "${var.webapp_name}-${var.env_name}-attendance-failures"
+  resource_group_name = data.azurerm_resource_group.rg.name
+  location            = data.azurerm_resource_group.rg.location
+  description         = "Attendance processor failing to write to database. Events may be lost."
+  severity            = 1
+  evaluation_frequency = "PT5M"
+  window_duration      = "PT5M"
+  scopes               = [azurerm_log_analytics_workspace.observability.id]
+
+  criteria {
+    query                   = <<-QUERY
+      FunctionAppLogs
+      | where Level == "Error"
+      | where Message contains "attendance_processor_failed"
+    QUERY
+    time_aggregation_method = "Count"
+    threshold               = 2
+    operator                = "GreaterThan"
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.db_alerts[0].id]
+  }
 }
 
 resource "azurerm_api_management" "app" {

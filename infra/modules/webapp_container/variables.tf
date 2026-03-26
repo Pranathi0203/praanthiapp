@@ -204,3 +204,63 @@ variable "log_analytics_retention_days" {
   type    = number
   default = 30
 }
+
+variable "pg_log_min_duration_ms" {
+  type        = number
+  default     = 1000
+  description = "Log queries slower than this threshold in milliseconds. Set to -1 to disable, 0 to log everything."
+}
+
+variable "pg_deadlock_timeout_ms" {
+  type        = number
+  default     = 1000
+  description = "Time in milliseconds a transaction waits for a lock before deadlock detection runs and the wait is logged."
+}
+
+variable "pg_log_temp_files_kb" {
+  type        = number
+  default     = 0
+  description = "Log temp files larger than this size in kilobytes. 0 logs all temp files (any spill to disk)."
+}
+
+variable "pg_qs_retention_days" {
+  type        = number
+  default     = 7
+  description = "Number of days to retain Azure Query Store performance history."
+}
+
+variable "alert_email" {
+  type        = string
+  default     = ""
+  description = "Email address to receive database alerts. Leave empty to disable all alerting."
+}
+
+variable "alert_webhook_url" {
+  type        = string
+  default     = ""
+  description = "Optional webhook URL for alerts (Teams, Slack, PagerDuty). Leave empty to disable."
+}
+
+variable "pg_alert_max_connections" {
+  type        = number
+  default     = 40
+  description = "Alert when active connections exceed this. B1ms hard limit is ~50, so default 40 gives early warning."
+}
+
+variable "pg_alert_cpu_threshold" {
+  type        = number
+  default     = 85
+  description = "Alert when PostgreSQL CPU percent exceeds this threshold for 15 minutes."
+}
+
+variable "pg_alert_storage_threshold" {
+  type        = number
+  default     = 80
+  description = "Alert when PostgreSQL storage percent exceeds this threshold."
+}
+
+variable "pg_alert_iops_threshold" {
+  type        = number
+  default     = 90
+  description = "Alert when PostgreSQL IOPS percent exceeds this threshold."
+}
