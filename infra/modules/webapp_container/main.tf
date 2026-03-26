@@ -251,10 +251,12 @@ resource "azurerm_iothub" "app" {
 }
 
 # Create IoT Hub device identities and write their connection strings to Key Vault.
-# Triggered whenever the IoT Hub is replaced so devices are always in sync.
+# Also refreshes the Event Hub connection string so the Function App always has a valid endpoint.
+# Triggered whenever the IoT Hub is replaced so everything stays in sync.
 resource "null_resource" "iothub_devices" {
   triggers = {
-    iothub_id = azurerm_iothub.app.id
+    iothub_id              = azurerm_iothub.app.id
+    event_hub_endpoint     = azurerm_iothub.app.event_hub_events_endpoint
   }
 
   depends_on = [
@@ -292,6 +294,13 @@ resource "null_resource" "iothub_devices" {
         --device-id 'litware-device' \
         --query connectionString -o tsv)
 
+      echo "Fetching Event Hub-compatible connection string..."
+      EVENTHUB_CS=$(az iot hub connection-string show \
+        --hub-name '${azurerm_iothub.app.name}' \
+        --resource-group '${data.azurerm_resource_group.rg.name}' \
+        --default-eventhub \
+        --query connectionString -o tsv)
+
       echo "Writing connection strings to Key Vault..."
       az keyvault secret set \
         --vault-name '${azurerm_key_vault.app.name}' \
@@ -305,7 +314,13 @@ resource "null_resource" "iothub_devices" {
         --value "$LITWARE_CS" \
         --only-show-errors
 
-      echo "IoT Hub devices ready."
+      az keyvault secret set \
+        --vault-name '${azurerm_key_vault.app.name}' \
+        --name 'iothub-eventhub-connection-string' \
+        --value "$EVENTHUB_CS" \
+        --only-show-errors
+
+      echo "IoT Hub devices and Event Hub connection string ready."
     EOT
   }
 }
