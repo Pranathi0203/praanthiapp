@@ -250,6 +250,13 @@ resource "azurerm_iothub" "app" {
   }
 }
 
+resource "azurerm_iothub_consumer_group" "attendance_pipeline" {
+  name                   = "attendance-pipeline"
+  iothub_name            = azurerm_iothub.app.name
+  eventhub_endpoint_name = "events"
+  resource_group_name    = data.azurerm_resource_group.rg.name
+}
+
 # Create IoT Hub device identities and write their connection strings to Key Vault.
 # Also refreshes the Event Hub connection string so the Function App always has a valid endpoint.
 # Triggered whenever the IoT Hub is replaced so everything stays in sync.
@@ -950,6 +957,12 @@ resource "azurerm_key_vault_secret" "contoso_device_connection_string" {
   value        = var.contoso_device_connection_string
   key_vault_id = azurerm_key_vault.app.id
   depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
+  # null_resource.iothub_devices is the authoritative writer after initial creation.
+  # Ignore value changes here to prevent Terraform from overwriting the live key
+  # with a stale pipeline variable whenever the IoT Hub is recreated.
+  lifecycle {
+    ignore_changes = [value]
+  }
 }
 
 resource "azurerm_key_vault_secret" "litware_device_connection_string" {
@@ -958,6 +971,9 @@ resource "azurerm_key_vault_secret" "litware_device_connection_string" {
   value        = var.litware_device_connection_string
   key_vault_id = azurerm_key_vault.app.id
   depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
+  lifecycle {
+    ignore_changes = [value]
+  }
 }
 
 resource "azurerm_key_vault_secret" "iothub_eventhub_connection_string" {
@@ -966,6 +982,9 @@ resource "azurerm_key_vault_secret" "iothub_eventhub_connection_string" {
   value        = var.iothub_eventhub_connection_string
   key_vault_id = azurerm_key_vault.app.id
   depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
+  lifecycle {
+    ignore_changes = [value]
+  }
 }
 
 resource "azurerm_key_vault_secret" "application_insights_connection_string" {
