@@ -1002,7 +1002,7 @@ resource "azurerm_monitor_metric_alert" "pg_high_iops" {
 
   criteria {
     metric_namespace = "Microsoft.DBforPostgreSQL/flexibleServers"
-    metric_name      = "iops_percent"
+    metric_name      = "disk_iops_consumed_percentage"
     aggregation      = "Average"
     operator         = "GreaterThan"
     threshold        = var.pg_alert_iops_threshold
