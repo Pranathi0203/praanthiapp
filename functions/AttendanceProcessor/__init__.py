@@ -55,7 +55,6 @@ def main(msg):
     application_properties = _normalize_properties(getattr(msg, "application_properties", {}))
     telemetry = payload.get("telemetry") or {}
     organization = payload["organization"]
-    database_url = get_database_url(organization)
 
     log_event(
         logging.INFO,
@@ -69,6 +68,7 @@ def main(msg):
     )
 
     try:
+        database_url = get_database_url(organization)
         with closing(psycopg.connect(database_url)) as conn:
             ensure_schema(conn)
             with conn.cursor() as cur:
@@ -117,7 +117,7 @@ def main(msg):
                 )
             conn.commit()
     except Exception as exc:
-        logger.exception(
+        logger.error(
             json.dumps(
                 {
                     "event": "attendance_processor_failed",
