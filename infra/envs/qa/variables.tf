@@ -108,3 +108,8 @@ variable "alert_email" {
   type    = string
   default = "pranymunnangi@gmail.com"
 }
+
+variable "iothub_data_contributor_principal_id" {
+  type    = string
+  default = ""
+}

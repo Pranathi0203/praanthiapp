@@ -242,6 +242,7 @@ resource "azurerm_iothub" "app" {
   name                = local.iothub_name
   resource_group_name = data.azurerm_resource_group.rg.name
   location            = data.azurerm_resource_group.rg.location
+  min_tls_version     = "1.2"
 
   sku {
     name     = var.iothub_sku_name
@@ -447,6 +448,27 @@ resource "azurerm_role_assignment" "webapp_staging_rg_contributor" {
   scope                = data.azurerm_resource_group.rg.id
   role_definition_name = "Contributor"
   principal_id         = azurerm_linux_web_app_slot.staging.identity[0].principal_id
+}
+
+# IoT Hub data plane roles — separate from ARM-level Contributor.
+# Without these, portal device listing and az iot CLI commands return
+# IotHubUnauthorizedAccess even when the user has ARM Owner/Contributor.
+
+# Grants the ops user (and Terraform runner) full IoT Hub data plane access:
+# read/write device identities, send/receive messages, query the registry.
+resource "azurerm_role_assignment" "iothub_data_contributor_ops" {
+  count                = var.iothub_data_contributor_principal_id != "" ? 1 : 0
+  scope                = azurerm_iothub.app.id
+  role_definition_name = "IoT Hub Data Contributor"
+  principal_id         = var.iothub_data_contributor_principal_id
+}
+
+# Grants the CI/CD service principal IoT Hub data plane access so the
+# null_resource can create device identities via az iot hub device-identity create.
+resource "azurerm_role_assignment" "iothub_data_contributor_cicd" {
+  scope                = azurerm_iothub.app.id
+  role_definition_name = "IoT Hub Data Contributor"
+  principal_id         = data.azurerm_client_config.current.object_id
 }
 
 resource "azurerm_postgresql_flexible_server" "db" {

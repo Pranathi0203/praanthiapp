@@ -229,6 +229,12 @@ variable "pg_qs_retention_days" {
   description = "Number of days to retain Azure Query Store performance history."
 }
 
+variable "iothub_data_contributor_principal_id" {
+  type        = string
+  default     = ""
+  description = "Object ID of the user or group to assign IoT Hub Data Contributor role. Grants portal device listing and az iot CLI access."
+}
+
 variable "alert_email" {
   type        = string
   default     = ""

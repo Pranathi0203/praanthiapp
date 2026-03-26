@@ -45,6 +45,7 @@ module "app" {
   dd_trace_agent_url                     = var.dd_trace_agent_url
   github_dashboard_token                 = var.github_dashboard_token
   alert_email                            = var.alert_email
+  iothub_data_contributor_principal_id  = var.iothub_data_contributor_principal_id
 
   # Optional extra settings
   app_settings = {
