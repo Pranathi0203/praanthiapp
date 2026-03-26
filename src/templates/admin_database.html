@@ -218,6 +218,67 @@
         {% endif %}
       </section>
 
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Provisioning</p>
+            <h2>Create a new PostgreSQL Flexible Server</h2>
+          </div>
+        </div>
+
+        {% if postgres_platform_configured %}
+        <p class="eyebrow note-copy">
+          Creates a new Azure PostgreSQL Flexible Server in resource group <strong>{{ server.resource_group }}</strong>.
+          This is a long-running operation — the page will return immediately and the server will provision in the background.
+          Public access is disabled; connect via VNet integration only.
+        </p>
+
+        <form method="post" action="/admin/databases/server/create" class="stacked-form">
+          <label>
+            New server name
+            <input type="text" name="new_server_name" placeholder="pranathi-dev-pg-new-01" required />
+          </label>
+          <label>
+            Admin username
+            <input type="text" name="admin_user" placeholder="appadmin" required />
+          </label>
+          <label>
+            Admin password
+            <input type="password" name="admin_password" placeholder="Strong password required" required />
+          </label>
+          <label>
+            SKU
+            <select name="sku_name">
+              <option value="B_Standard_B1ms" selected>B1ms — 1 vCore, 2 GiB (dev/test)</option>
+              <option value="B_Standard_B2ms">B2ms — 2 vCores, 4 GiB</option>
+              <option value="GP_Standard_D2s_v3">D2s v3 — 2 vCores, 8 GiB (general purpose)</option>
+              <option value="GP_Standard_D4s_v3">D4s v3 — 4 vCores, 16 GiB (general purpose)</option>
+            </select>
+          </label>
+          <label>
+            Storage size
+            <select name="storage_size_gb">
+              <option value="32" selected>32 GiB</option>
+              <option value="64">64 GiB</option>
+              <option value="128">128 GiB</option>
+              <option value="256">256 GiB</option>
+            </select>
+          </label>
+          <label>
+            PostgreSQL version
+            <select name="postgres_version">
+              <option value="14" selected>14</option>
+              <option value="15">15</option>
+              <option value="16">16</option>
+            </select>
+          </label>
+          <button class="btn" type="submit">Create server</button>
+        </form>
+        {% else %}
+        <p>Azure platform controls are not configured yet.</p>
+        {% endif %}
+      </section>
+
     </main>
   </body>
 </html>

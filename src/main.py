@@ -1707,6 +1707,40 @@ def admin_database_server_delete(request: Request):
         )
 
 
+@app.post("/admin/databases/server/create")
+def admin_database_server_create(
+    request: Request,
+    new_server_name: str = Form(...),
+    admin_user: str = Form(...),
+    admin_password: str = Form(...),
+    sku_name: str = Form("B_Standard_B1ms"),
+    storage_size_gb: str = Form("32"),
+    postgres_version: str = Form("14"),
+):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    try:
+        run_postgres_platform_action(
+            "create-server",
+            NewServerName=new_server_name,
+            AdminUser=admin_user,
+            AdminPassword=admin_password,
+            SkuName=sku_name,
+            StorageSizeGb=storage_size_gb,
+            PostgresVersion=postgres_version,
+        )
+        log_event(logging.INFO, "create_server_requested", new_server_name=new_server_name)
+        message = f"Create server requested: {new_server_name} in {AZURE_RESOURCE_GROUP}."
+        return RedirectResponse(f"/admin/databases?msg={urllib_parse.quote_plus(message)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="create_server", new_server_name=new_server_name)
+        return RedirectResponse(
+            f"/admin/databases?error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
 @app.post("/admin/databases/database/delete")
 def admin_database_delete(request: Request, database_key: str = Form(...)):
     if not require_admin_session(request):

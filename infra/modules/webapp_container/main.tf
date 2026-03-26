@@ -249,6 +249,66 @@ resource "azurerm_iothub" "app" {
   }
 }
 
+# Create IoT Hub device identities and write their connection strings to Key Vault.
+# Triggered whenever the IoT Hub is replaced so devices are always in sync.
+resource "null_resource" "iothub_devices" {
+  triggers = {
+    iothub_id = azurerm_iothub.app.id
+  }
+
+  depends_on = [
+    azurerm_iothub.app,
+    azurerm_key_vault_access_policy.terraform_runner,
+  ]
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      set -e
+
+      echo "Installing azure-iot CLI extension..."
+      az extension add --name azure-iot --only-show-errors 2>/dev/null || true
+
+      echo "Creating contoso-device..."
+      az iot hub device-identity create \
+        --hub-name '${azurerm_iothub.app.name}' \
+        --device-id 'contoso-device' \
+        --only-show-errors 2>/dev/null || true
+
+      echo "Creating litware-device..."
+      az iot hub device-identity create \
+        --hub-name '${azurerm_iothub.app.name}' \
+        --device-id 'litware-device' \
+        --only-show-errors 2>/dev/null || true
+
+      echo "Fetching connection strings..."
+      CONTOSO_CS=$(az iot hub device-identity connection-string show \
+        --hub-name '${azurerm_iothub.app.name}' \
+        --device-id 'contoso-device' \
+        --query connectionString -o tsv)
+
+      LITWARE_CS=$(az iot hub device-identity connection-string show \
+        --hub-name '${azurerm_iothub.app.name}' \
+        --device-id 'litware-device' \
+        --query connectionString -o tsv)
+
+      echo "Writing connection strings to Key Vault..."
+      az keyvault secret set \
+        --vault-name '${azurerm_key_vault.app.name}' \
+        --name 'contoso-device-connection-string' \
+        --value "$CONTOSO_CS" \
+        --only-show-errors
+
+      az keyvault secret set \
+        --vault-name '${azurerm_key_vault.app.name}' \
+        --name 'litware-device-connection-string' \
+        --value "$LITWARE_CS" \
+        --only-show-errors
+
+      echo "IoT Hub devices ready."
+    EOT
+  }
+}
+
 resource "azurerm_storage_account" "function" {
   name                     = local.function_storage_account_name
   resource_group_name      = data.azurerm_resource_group.rg.name

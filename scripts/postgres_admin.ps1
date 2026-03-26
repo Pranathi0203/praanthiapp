@@ -15,6 +15,13 @@ param(
     [string]$RestoreTimeUtc,
     [string]$BackupName,
     [string]$DatabaseName,
+    [string]$NewServerName,
+    [string]$AdminUser,
+    [string]$AdminPassword,
+    [string]$SkuName,
+    [string]$StorageSizeGb,
+    [string]$PostgresVersion,
+    [string]$Location,
     [string]$UseManagedIdentity = "true"
 )
 
@@ -198,6 +205,30 @@ $result = switch ($Action) {
             "--name", $ServerName,
             "--yes"
         )
+        break
+    }
+    "create-server" {
+        if (-not $NewServerName) { throw "NewServerName is required for create-server." }
+        if (-not $AdminUser)     { throw "AdminUser is required for create-server." }
+        if (-not $AdminPassword) { throw "AdminPassword is required for create-server." }
+
+        $createArgs = @(
+            "postgres", "flexible-server", "create",
+            "--resource-group", $ResourceGroup,
+            "--name",           $NewServerName,
+            "--admin-user",     $AdminUser,
+            "--admin-password", $AdminPassword,
+            "--sku-name",       $(if ($SkuName)          { $SkuName }          else { "B_Standard_B1ms" }),
+            "--storage-size",   $(if ($StorageSizeGb)    { $StorageSizeGb }    else { "32" }),
+            "--version",        $(if ($PostgresVersion)  { $PostgresVersion }  else { "14" }),
+            "--public-access",  "None"
+        )
+
+        if ($Location) {
+            $createArgs += "--location", $Location
+        }
+
+        Invoke-AzNone $createArgs
         break
     }
     "delete-database" {
