@@ -1,3 +1,4 @@
 azure-functions
 azure-servicebus
+applicationinsights
 psycopg[binary]

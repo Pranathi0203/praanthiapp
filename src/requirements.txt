@@ -3,8 +3,10 @@ uvicorn[standard]
 jinja2
 python-multipart
 psycopg[binary]
+ddtrace
 azure-monitor-opentelemetry
 opentelemetry-instrumentation-fastapi
+applicationinsights
 azure-iot-device
 redis
 itsdangerous

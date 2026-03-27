@@ -5,13 +5,25 @@ import time
 
 from azure.servicebus import ServiceBusClient, ServiceBusMessage
 
+try:
+    from applicationinsights import TelemetryClient as _TelemetryClient
+except ImportError:
+    _TelemetryClient = None
+
 logging.getLogger().setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
+
+_connection_string = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
+_ai_client = _TelemetryClient(_connection_string) if (_TelemetryClient and _connection_string) else None
 
 
 def log_event(level, event_name, **fields):
     payload = {key: value for key, value in fields.items() if value is not None and value != ""}
     logger.log(level, event_name, extra={"custom_dimensions": {"event": event_name, **payload}})
+    if _ai_client:
+        _ai_client.context.operation.id = payload.get("trace_id") or payload.get("request_id", "")
+        _ai_client.track_event(event_name, properties={"event": event_name, **{k: str(v) for k, v in payload.items()}})
+        _ai_client.flush()
 
 
 def _iter_events(event):
