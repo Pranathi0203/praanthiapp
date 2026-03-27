@@ -3,13 +3,20 @@ import logging
 import os
 import time
 
+from azure.monitor.opentelemetry import configure_azure_monitor
 from azure.servicebus import ServiceBusClient, ServiceBusMessage
+
+logging.basicConfig(level=logging.INFO)
+_connection_string = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
+if _connection_string:
+    configure_azure_monitor(connection_string=_connection_string, logging_level=logging.INFO)
 
 logger = logging.getLogger(__name__)
 
 
 def log_event(level, event_name, **fields):
-    logger.log(level, json.dumps({"event": event_name, **fields}, default=str, sort_keys=True))
+    payload = {key: value for key, value in fields.items() if value is not None and value != ""}
+    logger.log(level, event_name, extra={"custom_dimensions": {"event": event_name, **payload}})
 
 
 def _iter_events(event):

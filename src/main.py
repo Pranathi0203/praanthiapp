@@ -152,7 +152,7 @@ def log_event(level: int, event_name: str, **fields: Any):
             **get_datadog_log_context(),
         }
     )
-    logger.log(level, json.dumps(payload, default=str, sort_keys=True))
+    logger.log(level, event_name, extra={"custom_dimensions": payload})
 
 
 def setup_telemetry():
@@ -172,10 +172,14 @@ def setup_telemetry():
         logger.warning("Application Insights connection string not set.")
         return
 
-    configure_azure_monitor(connection_string=APPINSIGHTS_CONNECTION_STRING)
+    configure_azure_monitor(
+        connection_string=APPINSIGHTS_CONNECTION_STRING,
+        logging_level=logging.INFO,
+    )
     FastAPIInstrumentor.instrument_app(app)
 
 
+logging.basicConfig(level=logging.INFO)
 setup_telemetry()
 
 
