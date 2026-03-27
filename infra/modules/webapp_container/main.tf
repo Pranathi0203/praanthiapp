@@ -689,6 +689,10 @@ resource "azurerm_linux_function_app" "attendance" {
   https_only                  = true
   zip_deploy_file             = data.archive_file.attendance_functions.output_path
 
+  tags = {
+    function_code_sha = data.archive_file.attendance_functions.output_sha256
+  }
+
   site_config {
     application_stack {
       python_version = var.function_python_version
