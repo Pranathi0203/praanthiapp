@@ -14,8 +14,15 @@ except ImportError:
 logging.getLogger().setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
+def _parse_ikey(connection_string: str) -> str:
+    for part in connection_string.split(";"):
+        if part.lower().startswith("instrumentationkey="):
+            return part.split("=", 1)[1]
+    return connection_string
+
+
 _connection_string = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
-_ai_client = _TelemetryClient(_connection_string) if (_TelemetryClient and _connection_string) else None
+_ai_client = _TelemetryClient(_parse_ikey(_connection_string)) if (_TelemetryClient and _connection_string) else None
 
 
 def log_event(level, event_name, **fields):
