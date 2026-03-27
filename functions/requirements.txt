@@ -1,4 +1,3 @@
 azure-functions
 azure-servicebus
-azure-monitor-opentelemetry
 psycopg[binary]

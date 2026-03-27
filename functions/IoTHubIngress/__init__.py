@@ -3,14 +3,9 @@ import logging
 import os
 import time
 
-from azure.monitor.opentelemetry import configure_azure_monitor
 from azure.servicebus import ServiceBusClient, ServiceBusMessage
 
 logging.basicConfig(level=logging.INFO)
-_connection_string = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
-if _connection_string:
-    configure_azure_monitor(connection_string=_connection_string, logging_level=logging.INFO)
-
 logger = logging.getLogger(__name__)
 
 

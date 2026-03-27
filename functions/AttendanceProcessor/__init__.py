@@ -5,13 +5,8 @@ import time
 from contextlib import closing
 
 import psycopg
-from azure.monitor.opentelemetry import configure_azure_monitor
 
 logging.basicConfig(level=logging.INFO)
-_connection_string = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
-if _connection_string:
-    configure_azure_monitor(connection_string=_connection_string, logging_level=logging.INFO)
-
 logger = logging.getLogger(__name__)
 
 
