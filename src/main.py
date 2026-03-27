@@ -44,6 +44,11 @@ except ImportError:  # pragma: no cover - optional until infrastructure is confi
 
 
 try:
+    from applicationinsights import TelemetryClient as _TelemetryClient
+except ImportError:  # pragma: no cover - optional until applicationinsights is installed
+    _TelemetryClient = None
+
+try:
     from azure.iot.device import IoTHubDeviceClient
 except ImportError:  # pragma: no cover - optional until infrastructure is configured
     IoTHubDeviceClient = None
@@ -140,6 +145,25 @@ def get_datadog_trace_id() -> str:
     return datadog_context.get("dd.trace_id", "")
 
 
+def _parse_ikey(connection_string: str) -> str:
+    for part in connection_string.split(";"):
+        if part.lower().startswith("instrumentationkey="):
+            return part.split("=", 1)[1]
+    return connection_string
+
+
+_ai_client: Any = None
+
+
+def _get_ai_client() -> Any:
+    global _ai_client
+    if _TelemetryClient is None or not APPINSIGHTS_CONNECTION_STRING:
+        return None
+    if _ai_client is None:
+        _ai_client = _TelemetryClient(_parse_ikey(APPINSIGHTS_CONNECTION_STRING))
+    return _ai_client
+
+
 def log_event(level: int, event_name: str, **fields: Any):
     payload = _compact_fields(
         {
@@ -154,9 +178,11 @@ def log_event(level: int, event_name: str, **fields: Any):
         }
     )
     logger.log(level, event_name, extra={"custom_dimensions": payload})
-    span = trace.get_current_span()
-    if span.is_recording():
-        span.add_event(event_name, attributes={k: str(v) for k, v in payload.items()})
+    tc = _get_ai_client()
+    if tc:
+        tc.context.operation.id = payload.get("trace_id") or payload.get("request_id", "")
+        tc.track_event(event_name, properties={k: str(v) for k, v in payload.items()})
+        tc.flush()
 
 
 def setup_telemetry():

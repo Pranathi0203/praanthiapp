@@ -5,6 +5,7 @@ python-multipart
 psycopg[binary]
 ddtrace
 azure-monitor-opentelemetry
+applicationinsights
 opentelemetry-instrumentation-fastapi
 azure-iot-device
 redis
