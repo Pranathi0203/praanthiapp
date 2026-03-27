@@ -5,7 +5,7 @@ import time
 
 from azure.servicebus import ServiceBusClient, ServiceBusMessage
 
-logging.basicConfig(level=logging.INFO)
+logging.getLogger().setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 
