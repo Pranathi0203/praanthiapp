@@ -33,7 +33,8 @@ module "app" {
   dd_trace_agent_url                     = var.dd_trace_agent_url
   github_dashboard_token                 = var.github_dashboard_token
   alert_email                            = var.alert_email
-  iothub_data_contributor_principal_id  = var.iothub_data_contributor_principal_id
+  pg_alert_cpu_threshold                 = var.pg_alert_cpu_threshold
+  iothub_data_contributor_principal_id   = var.iothub_data_contributor_principal_id
 }
 
 output "webapp_url" { value = module.app.webapp_url }
@@ -48,3 +49,8 @@ output "iothub_name" { value = module.app.iothub_name }
 output "function_app_name" { value = module.app.function_app_name }
 output "log_analytics_workspace_id" { value = module.app.log_analytics_workspace_id }
 output "log_analytics_workspace_name" { value = module.app.log_analytics_workspace_name }
+output "application_insights_name" { value = module.app.application_insights_name }
+output "application_insights_connection_string" {
+  value     = module.app.application_insights_connection_string
+  sensitive = true
+}

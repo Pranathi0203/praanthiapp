@@ -95,12 +95,27 @@ locals {
   optional_litware_app_settings = var.litware_device_connection_string != "" ? {
     "LITWARE_DEVICE_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_device_connection_string[0].versionless_id})"
   } : {}
-  optional_app_insights_settings = var.application_insights_connection_string != "" ? {
-    "APPLICATIONINSIGHTS_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.application_insights_connection_string[0].versionless_id})"
-  } : {}
+  optional_app_insights_settings = {
+    "APPLICATIONINSIGHTS_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.application_insights_connection_string.versionless_id})"
+  }
   optional_datadog_settings = merge(
     {
       "DD_SERVICE"        = var.dd_service != "" ? var.dd_service : var.webapp_name
+      "DD_ENV"            = var.dd_env != "" ? var.dd_env : var.env_name
+      "DD_VERSION"        = var.dd_version
+      "DD_TRACE_ENABLED"  = tostring(var.dd_trace_enabled)
+      "DD_LOGS_INJECTION" = tostring(var.dd_logs_injection)
+    },
+    var.dd_agent_host != "" ? {
+      "DD_AGENT_HOST" = var.dd_agent_host
+    } : {},
+    var.dd_trace_agent_url != "" ? {
+      "DD_TRACE_AGENT_URL" = var.dd_trace_agent_url
+    } : {}
+  )
+  optional_function_datadog_settings = merge(
+    {
+      "DD_SERVICE"        = var.dd_service != "" ? var.dd_service : local.function_app_name
       "DD_ENV"            = var.dd_env != "" ? var.dd_env : var.env_name
       "DD_VERSION"        = var.dd_version
       "DD_TRACE_ENABLED"  = tostring(var.dd_trace_enabled)
@@ -129,9 +144,10 @@ locals {
       "CONTOSO_DATABASE_URL"           = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_db_connection_string.versionless_id})"
       "LITWARE_DATABASE_URL"           = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.litware_db_connection_string.versionless_id})"
     },
-    var.application_insights_connection_string != "" ? {
-      "APPLICATIONINSIGHTS_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.application_insights_connection_string[0].versionless_id})"
-    } : {},
+    local.optional_function_datadog_settings,
+    {
+      "APPLICATIONINSIGHTS_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.application_insights_connection_string.versionless_id})"
+    },
     var.iothub_eventhub_connection_string != "" ? {
       "IOTHUB_EVENTHUB_CONNECTION" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.iothub_eventhub_connection_string[0].versionless_id})"
     } : {}
@@ -215,6 +231,14 @@ resource "azurerm_log_analytics_workspace" "observability" {
   retention_in_days   = var.log_analytics_retention_days
 }
 
+resource "azurerm_application_insights" "observability" {
+  name                = local.app_insights_name
+  location            = data.azurerm_resource_group.rg.location
+  resource_group_name = data.azurerm_resource_group.rg.name
+  application_type    = "web"
+  workspace_id        = azurerm_log_analytics_workspace.observability.id
+}
+
 resource "azurerm_redis_cache" "app" {
   name                 = local.redis_name
   location             = data.azurerm_resource_group.rg.location
@@ -262,8 +286,8 @@ resource "azurerm_iothub_consumer_group" "attendance_pipeline" {
 # Triggered whenever the IoT Hub is replaced so everything stays in sync.
 resource "null_resource" "iothub_devices" {
   triggers = {
-    iothub_id              = azurerm_iothub.app.id
-    event_hub_endpoint     = azurerm_iothub.app.event_hub_events_endpoint
+    iothub_id          = azurerm_iothub.app.id
+    event_hub_endpoint = azurerm_iothub.app.event_hub_events_endpoint
   }
 
   depends_on = [
@@ -730,6 +754,18 @@ data "azurerm_monitor_diagnostic_categories" "iothub" {
   resource_id = azurerm_iothub.app.id
 }
 
+data "azurerm_monitor_diagnostic_categories" "key_vault" {
+  resource_id = azurerm_key_vault.app.id
+}
+
+data "azurerm_monitor_diagnostic_categories" "function_storage" {
+  resource_id = "${azurerm_storage_account.function.id}/blobServices/default"
+}
+
+data "azurerm_monitor_diagnostic_categories" "apim" {
+  resource_id = azurerm_api_management.app.id
+}
+
 resource "azurerm_monitor_diagnostic_setting" "webapp" {
   name                           = "${var.webapp_name}-${var.env_name}-diag"
   target_resource_id             = azurerm_linux_web_app.app.id
@@ -884,6 +920,72 @@ resource "azurerm_monitor_diagnostic_setting" "iothub" {
   }
 }
 
+resource "azurerm_monitor_diagnostic_setting" "key_vault" {
+  name                           = "${azurerm_key_vault.app.name}-diag"
+  target_resource_id             = azurerm_key_vault.app.id
+  log_analytics_workspace_id     = azurerm_log_analytics_workspace.observability.id
+  log_analytics_destination_type = "Dedicated"
+
+  dynamic "enabled_log" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.key_vault.log_category_types)
+    content {
+      category = enabled_log.value
+    }
+  }
+
+  dynamic "metric" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.key_vault.metrics)
+    content {
+      category = metric.value
+      enabled  = true
+    }
+  }
+}
+
+resource "azurerm_monitor_diagnostic_setting" "function_storage" {
+  name                           = "${azurerm_storage_account.function.name}-blob-diag"
+  target_resource_id             = "${azurerm_storage_account.function.id}/blobServices/default"
+  log_analytics_workspace_id     = azurerm_log_analytics_workspace.observability.id
+  log_analytics_destination_type = "Dedicated"
+
+  dynamic "enabled_log" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.function_storage.log_category_types)
+    content {
+      category = enabled_log.value
+    }
+  }
+
+  dynamic "metric" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.function_storage.metrics)
+    content {
+      category = metric.value
+      enabled  = true
+    }
+  }
+}
+
+resource "azurerm_monitor_diagnostic_setting" "apim" {
+  name                           = "${azurerm_api_management.app.name}-diag"
+  target_resource_id             = azurerm_api_management.app.id
+  log_analytics_workspace_id     = azurerm_log_analytics_workspace.observability.id
+  log_analytics_destination_type = "Dedicated"
+
+  dynamic "enabled_log" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.apim.log_category_types)
+    content {
+      category = enabled_log.value
+    }
+  }
+
+  dynamic "metric" {
+    for_each = toset(data.azurerm_monitor_diagnostic_categories.apim.metrics)
+    content {
+      category = metric.value
+      enabled  = true
+    }
+  }
+}
+
 resource "azurerm_key_vault_access_policy" "function_identity" {
   key_vault_id = azurerm_key_vault.app.id
   tenant_id    = data.azurerm_client_config.current.tenant_id
@@ -992,9 +1094,8 @@ resource "azurerm_key_vault_secret" "iothub_eventhub_connection_string" {
 }
 
 resource "azurerm_key_vault_secret" "application_insights_connection_string" {
-  count        = var.application_insights_connection_string != "" ? 1 : 0
   name         = "applicationinsights-connection-string"
-  value        = var.application_insights_connection_string
+  value        = azurerm_application_insights.observability.connection_string
   key_vault_id = azurerm_key_vault.app.id
   depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
 }
@@ -1164,21 +1265,19 @@ resource "azurerm_monitor_metric_alert" "pg_failed_connections" {
 # Fires the moment a deadlock is detected in PostgreSQL logs.
 # Enabled by: log_lock_waits = on, deadlock_timeout = 1000
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "pg_deadlock" {
-  count               = var.alert_email != "" ? 1 : 0
-  name                = "${var.webapp_name}-${var.env_name}-pg-deadlock"
-  resource_group_name = data.azurerm_resource_group.rg.name
-  location            = data.azurerm_resource_group.rg.location
-  description         = "A deadlock was detected in PostgreSQL. Check attendance_events concurrent writes."
-  severity            = 1
+  count                = var.alert_email != "" ? 1 : 0
+  name                 = "${var.webapp_name}-${var.env_name}-pg-deadlock"
+  resource_group_name  = data.azurerm_resource_group.rg.name
+  location             = data.azurerm_resource_group.rg.location
+  description          = "A deadlock was detected in PostgreSQL. Check attendance_events concurrent writes."
+  severity             = 1
   evaluation_frequency = "PT5M"
   window_duration      = "PT5M"
   scopes               = [azurerm_log_analytics_workspace.observability.id]
 
   criteria {
     query                   = <<-QUERY
-      AzureDiagnostics
-      | where ResourceProvider == "MICROSOFT.DBFORPOSTGRESQL"
-      | where Category == "PostgreSQLLogs"
+      PGSQLServerLogs
       | where Message contains "deadlock detected"
     QUERY
     time_aggregation_method = "Count"
@@ -1199,12 +1298,12 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "pg_deadlock" {
 # Fires when 3 or more queries exceed 5 seconds in a 5-minute window.
 # Enabled by: log_min_duration_statement = 1000 (logs all queries > 1s)
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "pg_slow_query" {
-  count               = var.alert_email != "" ? 1 : 0
-  name                = "${var.webapp_name}-${var.env_name}-pg-slow-query"
-  resource_group_name = data.azurerm_resource_group.rg.name
-  location            = data.azurerm_resource_group.rg.location
-  description         = "Multiple queries exceeding 5 seconds. Likely missing index or full table scan."
-  severity            = 2
+  count                = var.alert_email != "" ? 1 : 0
+  name                 = "${var.webapp_name}-${var.env_name}-pg-slow-query"
+  resource_group_name  = data.azurerm_resource_group.rg.name
+  location             = data.azurerm_resource_group.rg.location
+  description          = "Multiple queries exceeding 5 seconds. Likely missing index or full table scan."
+  severity             = 2
   evaluation_frequency = "PT5M"
   window_duration      = "PT5M"
   scopes               = [azurerm_log_analytics_workspace.observability.id]
@@ -1236,12 +1335,12 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "pg_slow_query" {
 # Fires when any transaction is logged waiting for a lock.
 # Enabled by: log_lock_waits = on, deadlock_timeout = 1000
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "pg_lock_wait" {
-  count               = var.alert_email != "" ? 1 : 0
-  name                = "${var.webapp_name}-${var.env_name}-pg-lock-wait"
-  resource_group_name = data.azurerm_resource_group.rg.name
-  location            = data.azurerm_resource_group.rg.location
-  description         = "Lock wait detected in PostgreSQL. Possible contention on attendance_events or app_users."
-  severity            = 2
+  count                = var.alert_email != "" ? 1 : 0
+  name                 = "${var.webapp_name}-${var.env_name}-pg-lock-wait"
+  resource_group_name  = data.azurerm_resource_group.rg.name
+  location             = data.azurerm_resource_group.rg.location
+  description          = "Lock wait detected in PostgreSQL. Possible contention on attendance_events or app_users."
+  severity             = 2
   evaluation_frequency = "PT5M"
   window_duration      = "PT5M"
   scopes               = [azurerm_log_analytics_workspace.observability.id]
@@ -1272,12 +1371,12 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "pg_lock_wait" {
 # Fires when the application starts hitting connection limits.
 # Root cause: no connection pooling in get_conn() — each request opens a new psycopg connection.
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "app_connection_exhaustion" {
-  count               = var.alert_email != "" ? 1 : 0
-  name                = "${var.webapp_name}-${var.env_name}-pg-conn-exhaustion"
-  resource_group_name = data.azurerm_resource_group.rg.name
-  location            = data.azurerm_resource_group.rg.location
-  description         = "Application receiving FATAL: too many connections from PostgreSQL."
-  severity            = 1
+  count                = var.alert_email != "" ? 1 : 0
+  name                 = "${var.webapp_name}-${var.env_name}-pg-conn-exhaustion"
+  resource_group_name  = data.azurerm_resource_group.rg.name
+  location             = data.azurerm_resource_group.rg.location
+  description          = "Application receiving FATAL: too many connections from PostgreSQL."
+  severity             = 1
   evaluation_frequency = "PT5M"
   window_duration      = "PT5M"
   scopes               = [azurerm_log_analytics_workspace.observability.id]
@@ -1306,12 +1405,12 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "app_connection_exhaus
 # Fires when the attendance Azure Function fails to write events to PostgreSQL.
 # Covers: deadlock kills, connection errors, schema lock timeouts from ensure_schema().
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "attendance_processor_failures" {
-  count               = var.alert_email != "" ? 1 : 0
-  name                = "${var.webapp_name}-${var.env_name}-attendance-failures"
-  resource_group_name = data.azurerm_resource_group.rg.name
-  location            = data.azurerm_resource_group.rg.location
-  description         = "Attendance processor failing to write to database. Events may be lost."
-  severity            = 1
+  count                = var.alert_email != "" ? 1 : 0
+  name                 = "${var.webapp_name}-${var.env_name}-attendance-failures"
+  resource_group_name  = data.azurerm_resource_group.rg.name
+  location             = data.azurerm_resource_group.rg.location
+  description          = "Attendance processor failing to write to database. Events may be lost."
+  severity             = 1
   evaluation_frequency = "PT5M"
   window_duration      = "PT5M"
   scopes               = [azurerm_log_analytics_workspace.observability.id]

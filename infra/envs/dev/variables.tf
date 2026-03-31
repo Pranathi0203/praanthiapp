@@ -14,7 +14,7 @@ variable "image_tag" { type = string }
 variable "container_port" { type = number }
 variable "allowed_client_cidr" {
   type    = string
-  default = "174.165.209.210/32"
+  default = "50.54.243.250/32"
 }
 variable "contoso_device_connection_string" {
   type      = string
@@ -30,6 +30,7 @@ variable "iothub_eventhub_connection_string" {
 }
 variable "application_insights_connection_string" {
   type      = string
+  default   = ""
   sensitive = true
 }
 variable "dd_service" {
@@ -69,6 +70,11 @@ variable "github_dashboard_token" {
 variable "alert_email" {
   type    = string
   default = "pranymunnangi@gmail.com"
+}
+
+variable "pg_alert_cpu_threshold" {
+  type    = number
+  default = 5
 }
 
 variable "iothub_data_contributor_principal_id" {

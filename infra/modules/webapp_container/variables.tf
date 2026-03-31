@@ -154,9 +154,10 @@ variable "iothub_eventhub_connection_string" {
 }
 
 variable "application_insights_connection_string" {
-  type      = string
-  default   = ""
-  sensitive = true
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Deprecated override. The module now provisions its own workspace-based Application Insights resource and uses that connection string."
 }
 
 variable "dd_service" {
