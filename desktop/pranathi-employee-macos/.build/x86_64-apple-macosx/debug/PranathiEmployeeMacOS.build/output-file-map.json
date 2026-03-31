@@ -1,0 +1,35 @@
+{
+  "": {
+    "swift-dependencies": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/master.swiftdeps"
+  },
+  "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/Sources/APIClient.swift": {
+    "dependencies": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/APIClient.d",
+    "object": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/APIClient.swift.o",
+    "swiftmodule": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/APIClient~partial.swiftmodule",
+    "swift-dependencies": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/APIClient.swiftdeps"
+  },
+  "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/Sources/ContentView.swift": {
+    "dependencies": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/ContentView.d",
+    "object": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/ContentView.swift.o",
+    "swiftmodule": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/ContentView~partial.swiftmodule",
+    "swift-dependencies": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/ContentView.swiftdeps"
+  },
+  "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/Sources/Models.swift": {
+    "dependencies": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/Models.d",
+    "object": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/Models.swift.o",
+    "swiftmodule": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/Models~partial.swiftmodule",
+    "swift-dependencies": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/Models.swiftdeps"
+  },
+  "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/Sources/PranathiEmployeeMacOSApp.swift": {
+    "dependencies": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/PranathiEmployeeMacOSApp.d",
+    "object": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/PranathiEmployeeMacOSApp.swift.o",
+    "swiftmodule": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/PranathiEmployeeMacOSApp~partial.swiftmodule",
+    "swift-dependencies": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/PranathiEmployeeMacOSApp.swiftdeps"
+  },
+  "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/Sources/SessionStore.swift": {
+    "dependencies": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/SessionStore.d",
+    "object": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/SessionStore.swift.o",
+    "swiftmodule": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/SessionStore~partial.swiftmodule",
+    "swift-dependencies": "/Users/pranathireddy/Downloads/pranathi-app/desktop/pranathi-employee-macos/.build/x86_64-apple-macosx/debug/PranathiEmployeeMacOS.build/SessionStore.swiftdeps"
+  }
+}
