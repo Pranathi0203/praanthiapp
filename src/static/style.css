@@ -279,23 +279,51 @@ th {
   color: #52657f;
 }
 
-.error-ops-grid {
+.ops-overview {
+  border-left: 6px solid #0b5fff;
+}
+
+.issue-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 1rem;
   margin: 1rem 0 2rem;
 }
 
-.issue-card {
-  display: grid;
-  gap: 1rem;
+.issue-row {
+  padding: 0;
+  overflow: hidden;
 }
 
-.issue-header {
+.issue-summary-row {
+  list-style: none;
   display: flex;
   justify-content: space-between;
   gap: 1rem;
   align-items: flex-start;
+  cursor: pointer;
+  padding: 1.25rem;
+}
+
+.issue-summary-row::-webkit-details-marker {
+  display: none;
+}
+
+.issue-summary-right {
+  display: grid;
+  justify-items: end;
+  gap: 0.5rem;
+  min-width: 120px;
+}
+
+.issue-subtext {
+  margin: 0.35rem 0 0;
+  color: #51657f;
+}
+
+.issue-row .issue-meta-grid,
+.issue-row .impact-block,
+.issue-row .issue-actions {
+  margin: 0 1.25rem 1rem;
 }
 
 .severity-pill {
@@ -358,6 +386,26 @@ th {
 
 .resource-list li {
   margin-bottom: 0.5rem;
+}
+
+.resource-id {
+  margin-top: 0.35rem;
+  color: #4f6076;
+  word-break: break-word;
+}
+
+.issue-action-label {
+  color: #42556f;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-align: right;
+}
+
+.raw-message {
+  padding: 0.8rem 0.95rem;
+  border-radius: 14px;
+  background: rgba(241, 245, 251, 0.95);
+  color: #253243;
 }
 
 .issue-actions {

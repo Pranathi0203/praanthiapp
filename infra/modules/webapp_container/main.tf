@@ -87,6 +87,8 @@ locals {
     "APPLICATION_INSIGHTS_NAME"           = azurerm_application_insights.observability.name
     "WEBAPP_NAME"                         = var.webapp_name
     "FUNCTION_APP_NAME"                   = local.function_app_name
+    "IOTHUB_NAME"                         = local.iothub_name
+    "SERVICEBUS_NAMESPACE_NAME"           = local.servicebus_namespace_name
     "AZURE_USE_MANAGED_IDENTITY"          = "true"
     "ALLOW_WEBAPP_RESTART"                = "true"
     "ALLOW_FUNCTIONAPP_RESTART"           = "true"

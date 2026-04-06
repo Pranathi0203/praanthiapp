@@ -86,6 +86,8 @@ AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP", "")
 AZURE_POSTGRES_SERVER_NAME = os.getenv("AZURE_POSTGRES_SERVER_NAME", "")
 WEBAPP_NAME = os.getenv("WEBAPP_NAME", "")
 FUNCTION_APP_NAME = os.getenv("FUNCTION_APP_NAME", "")
+IOTHUB_NAME = os.getenv("IOTHUB_NAME", "")
+SERVICEBUS_NAMESPACE_NAME = os.getenv("SERVICEBUS_NAMESPACE_NAME", "")
 AZURE_USE_MANAGED_IDENTITY = os.getenv("AZURE_USE_MANAGED_IDENTITY", "true").lower() == "true"
 ALLOW_WEBAPP_RESTART = os.getenv("ALLOW_WEBAPP_RESTART", "true").lower() == "true"
 ALLOW_FUNCTIONAPP_RESTART = os.getenv("ALLOW_FUNCTIONAPP_RESTART", "true").lower() == "true"
@@ -509,8 +511,10 @@ def severity_rank(label: str) -> int:
 
 def infer_error_severity(source_table: str, message: str, count: int) -> str:
     text = f"{source_table} {message}".lower()
-    if source_table == "PGSQLServerLogs" and ("could not connect" in text or "connection refused" in text):
+    if "could not connect" in text or "connection refused" in text or "connection timeout expired" in text:
         return "critical"
+    if "service bus" in text or "iothub" in text or "event hub" in text:
+        return "high"
     if "unauthorized" in text or "forbidden" in text or "deadlock" in text:
         return "high"
     if count >= 10:
@@ -522,7 +526,18 @@ def infer_error_severity(source_table: str, message: str, count: int) -> str:
 
 def classify_error_fix(source_table: str, error_type: str, message: str) -> dict[str, Any]:
     haystack = " ".join([source_table, error_type, message]).lower()
-    if any(signal in haystack for signal in ["pgsqlserverlogs", "postgres", "psycopg", "could not connect", "connection refused"]):
+    if any(
+        signal in haystack
+        for signal in [
+            "pgsqlserverlogs",
+            "postgres",
+            "psycopg",
+            "could not connect",
+            "connection refused",
+            "connection timeout expired",
+            "database connection failed",
+        ]
+    ):
         postgres_status = ""
         try:
             server_info = get_cached_postgres_platform_action("show-server")
@@ -536,25 +551,93 @@ def classify_error_fix(source_table: str, error_type: str, message: str) -> dict
             "fix_type": fix_type,
             "action_label": action_label,
             "component": "Azure PostgreSQL Flexible Server",
+            "component_group": "postgresql",
             "resource_name": AZURE_POSTGRES_SERVER_NAME or "PostgreSQL server",
             "resource_kind": "postgresql",
             "resource_id": AZURE_POSTGRES_SERVER_NAME,
             "is_available": bool(AZURE_POSTGRES_SERVER_NAME and ALLOW_POSTGRES_RESTART),
             "risk": "medium",
             "reason": "The database appears unavailable, so a PostgreSQL server recovery action is the safest bounded fix.",
+            "resources": [
+                {
+                    "name": AZURE_POSTGRES_SERVER_NAME or "PostgreSQL server",
+                    "kind": "postgresql",
+                    "id": AZURE_POSTGRES_SERVER_NAME,
+                }
+            ],
         }
 
-    if any(signal in haystack for signal in ["functionapplogs", "service bus", "event hub", "iothub", "function host"]):
+    if any(signal in haystack for signal in ["service bus", "servicebus", "queue", "attendance-events"]):
+        return {
+            "fix_type": "restart_function_app",
+            "action_label": "Restart Function App",
+            "component": "Service Bus attendance pipeline",
+            "component_group": "servicebus",
+            "resource_name": SERVICEBUS_NAMESPACE_NAME or "Service Bus namespace",
+            "resource_kind": "servicebus",
+            "resource_id": SERVICEBUS_NAMESPACE_NAME,
+            "is_available": bool(FUNCTION_APP_NAME and ALLOW_FUNCTIONAPP_RESTART),
+            "risk": "medium",
+            "reason": "The failure appears in the queue-processing pipeline, so restarting the Function App is the safest bounded recovery step.",
+            "resources": [
+                {
+                    "name": FUNCTION_APP_NAME or "Function App",
+                    "kind": "functionapp",
+                    "id": FUNCTION_APP_NAME,
+                },
+                {
+                    "name": SERVICEBUS_NAMESPACE_NAME or "Service Bus namespace",
+                    "kind": "servicebus",
+                    "id": SERVICEBUS_NAMESPACE_NAME,
+                },
+            ],
+        }
+
+    if any(signal in haystack for signal in ["iothub", "event hub", "eventhub", "iot ingress"]):
+        return {
+            "fix_type": "restart_function_app",
+            "action_label": "Restart Function App",
+            "component": "IoT Hub ingestion pipeline",
+            "component_group": "iothub",
+            "resource_name": IOTHUB_NAME or "IoT Hub",
+            "resource_kind": "iothub",
+            "resource_id": IOTHUB_NAME,
+            "is_available": bool(FUNCTION_APP_NAME and ALLOW_FUNCTIONAPP_RESTART),
+            "risk": "medium",
+            "reason": "The issue points to IoT ingestion or Event Hub forwarding, so restarting the Function App is the safest bounded recovery step.",
+            "resources": [
+                {
+                    "name": FUNCTION_APP_NAME or "Function App",
+                    "kind": "functionapp",
+                    "id": FUNCTION_APP_NAME,
+                },
+                {
+                    "name": IOTHUB_NAME or "IoT Hub",
+                    "kind": "iothub",
+                    "id": IOTHUB_NAME,
+                },
+            ],
+        }
+
+    if any(signal in haystack for signal in ["functionapplogs", "function host", "azure functions"]):
         return {
             "fix_type": "restart_function_app",
             "action_label": "Restart Function App",
             "component": "Azure Function App",
+            "component_group": "functionapp",
             "resource_name": FUNCTION_APP_NAME or "Function App",
             "resource_kind": "functionapp",
             "resource_id": FUNCTION_APP_NAME,
             "is_available": bool(FUNCTION_APP_NAME and ALLOW_FUNCTIONAPP_RESTART),
             "risk": "medium",
             "reason": "The failure points to the event-driven pipeline, so restarting the Function App is the least disruptive recovery step.",
+            "resources": [
+                {
+                    "name": FUNCTION_APP_NAME or "Function App",
+                    "kind": "functionapp",
+                    "id": FUNCTION_APP_NAME,
+                }
+            ],
         }
 
     if any(signal in haystack for signal in ["appexceptions", "apptraces", "uvicorn", "fastapi", "internal server error"]):
@@ -562,24 +645,103 @@ def classify_error_fix(source_table: str, error_type: str, message: str) -> dict
             "fix_type": "restart_webapp",
             "action_label": "Restart Web App",
             "component": "Azure App Service Web App",
+            "component_group": "webapp",
             "resource_name": WEBAPP_NAME or "Web App",
             "resource_kind": "webapp",
             "resource_id": WEBAPP_NAME,
             "is_available": bool(WEBAPP_NAME and ALLOW_WEBAPP_RESTART),
             "risk": "medium",
             "reason": "The failures appear to come from the web runtime, so restarting the web app is the safest operational reset.",
+            "resources": [
+                {
+                    "name": WEBAPP_NAME or "Web App",
+                    "kind": "webapp",
+                    "id": WEBAPP_NAME,
+                }
+            ],
         }
 
     return {
         "fix_type": "manual_investigation",
         "action_label": "Manual investigation",
         "component": "Unknown component",
+        "component_group": "unknown",
         "resource_name": resource_name_from_id(""),
         "resource_kind": "unknown",
         "resource_id": "",
         "is_available": False,
         "risk": "unknown",
         "reason": "No safe automated fix is available for this error signature yet.",
+        "resources": [],
+    }
+
+
+def describe_issue_title(source_table: str, error_type: str, message: str, fix: dict[str, Any]) -> str:
+    text = " ".join([source_table, error_type, message]).lower()
+    if fix["component_group"] == "postgresql":
+        return "Database server is unavailable"
+    if fix["component_group"] == "servicebus":
+        return "Service Bus pipeline is failing"
+    if fix["component_group"] == "iothub":
+        return "IoT Hub ingestion is failing"
+    if fix["component_group"] == "functionapp":
+        return "Background attendance processing is failing"
+    if "health_check_completed" in text:
+        return "Health checks are failing"
+    if "http_request_completed" in text:
+        return "Requests are completing with server errors"
+    if "application_exception" in text:
+        return "Application exception detected"
+    if error_type and error_type.lower() != source_table.lower():
+        return error_type.replace("_", " ").strip().title()
+    if message:
+        return message[:72].rstrip(".")
+    return "Unknown issue"
+
+
+def describe_issue_summary(source_table: str, error_type: str, message: str, fix: dict[str, Any]) -> str:
+    text = " ".join([source_table, error_type, message]).lower()
+    if fix["component_group"] == "postgresql":
+        return "The web app cannot reliably reach PostgreSQL, so health checks and requests may fail."
+    if fix["component_group"] == "servicebus":
+        return "Attendance events are failing in the queue-based processing path."
+    if fix["component_group"] == "iothub":
+        return "IoT device events are not flowing cleanly through the ingestion path."
+    if fix["component_group"] == "functionapp":
+        return "The background processing app is reporting runtime failures."
+    if "health_check_completed" in text:
+        return "The application health endpoint is reporting unhealthy checks."
+    if "http_request_completed" in text:
+        return "Recent requests are ending in error states and need review."
+    if "application_exception" in text:
+        return "An exception reached telemetry and should be reviewed with the related failure."
+    return message or "No summary available."
+
+
+def classify_issue_role(message: str) -> str:
+    lowered = (message or "").lower().strip()
+    if lowered in {"health_check_completed", "http_request_completed", "application_exception"}:
+        return "symptom"
+    return "root"
+
+
+def build_issue_overview(issues: list[dict[str, Any]]) -> dict[str, Any]:
+    counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    for item in issues:
+        counts[item["severity"]] = counts.get(item["severity"], 0) + 1
+
+    primary_issue = issues[0] if issues else None
+    if primary_issue:
+        headline = primary_issue["title"]
+        guidance = primary_issue["summary"]
+    else:
+        headline = "No major recurring issues found"
+        guidance = "The recent scan did not return recurring telemetry failures."
+
+    return {
+        "counts": counts,
+        "headline": headline,
+        "guidance": guidance,
     }
 
 
@@ -600,14 +762,10 @@ def load_recent_error_operations(minutes: int = 60, limit: int = 12) -> list[dic
         message = str(row.get("ExampleMessage", ""))
         count = int(row.get("Count", 0) or 0)
         fix = classify_error_fix(source_table, error_type, message)
+        title = describe_issue_title(source_table, error_type, message, fix)
+        summary = describe_issue_summary(source_table, error_type, message, fix)
         example_resource_id = str(row.get("ExampleResourceId", "") or "")
-        affected_resources = [
-            {
-                "name": fix["resource_name"],
-                "kind": fix["resource_kind"],
-                "id": fix["resource_id"],
-            }
-        ]
+        affected_resources = [resource for resource in fix.get("resources", []) if resource.get("name")]
         if example_resource_id and example_resource_id != fix["resource_id"]:
             affected_resources.append(
                 {
@@ -628,6 +786,9 @@ def load_recent_error_operations(minutes: int = 60, limit: int = 12) -> list[dic
                 "first_seen": row.get("FirstSeen", ""),
                 "last_seen": row.get("LastSeen", ""),
                 "example_message": message,
+                "title": title,
+                "summary": summary,
+                "role": classify_issue_role(message),
                 "operation_id": row.get("ExampleOperationId", ""),
                 "severity": severity,
                 "severity_rank": severity_rank(severity),
@@ -636,7 +797,7 @@ def load_recent_error_operations(minutes: int = 60, limit: int = 12) -> list[dic
             }
         )
 
-    items.sort(key=lambda item: (item["severity_rank"], -item["count"]))
+    items.sort(key=lambda item: (item["severity_rank"], 0 if item["role"] == "root" else 1, -item["count"]))
     return items
 
 
@@ -1378,10 +1539,12 @@ def load_error_operations_context(request: Request, msg: str = "", error: str = 
         return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
 
     issues: list[dict[str, Any]] = []
+    issue_overview = build_issue_overview([])
     scan_error = error
     if is_error_operations_configured():
         try:
             issues = load_recent_error_operations(minutes=minutes)
+            issue_overview = build_issue_overview(issues)
         except Exception as exc:
             record_exception_to_telemetry(exc, action="scan_recent_errors")
             scan_error = str(exc)
@@ -1395,6 +1558,7 @@ def load_error_operations_context(request: Request, msg: str = "", error: str = 
             "msg": msg,
             "error": scan_error,
             "issues": issues,
+            "issue_overview": issue_overview,
             "minutes": minutes,
             "error_ops_configured": is_error_operations_configured(),
             "allow_webapp_restart": ALLOW_WEBAPP_RESTART,

@@ -63,32 +63,51 @@
           <strong class="stat-value">{{ issues|length }}</strong>
         </article>
         <article class="stat-card">
+          <span class="stat-label">Critical</span>
+          <strong class="stat-value">{{ issue_overview.counts.critical }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">High</span>
+          <strong class="stat-value">{{ issue_overview.counts.high }}</strong>
+        </article>
+        <article class="stat-card">
           <span class="stat-label">Web app fixes</span>
           <strong class="stat-value">{{ "On" if allow_webapp_restart else "Off" }}</strong>
         </article>
         <article class="stat-card">
-          <span class="stat-label">Function fixes</span>
+          <span class="stat-label">Pipeline fixes</span>
           <strong class="stat-value">{{ "On" if allow_functionapp_restart else "Off" }}</strong>
         </article>
         <article class="stat-card">
-          <span class="stat-label">PostgreSQL fixes</span>
+          <span class="stat-label">Database fixes</span>
           <strong class="stat-value">{{ "On" if allow_postgres_restart else "Off" }}</strong>
         </article>
       </section>
 
       {% if issues %}
-      <section class="error-ops-grid">
-        {% for issue in issues %}
-        <article class="card issue-card">
-          <div class="issue-header">
-            <div>
-              <p class="eyebrow">{{ issue.source_table }}</p>
-              <h2>{{ issue.error_type }}</h2>
-            </div>
-            <span class="severity-pill severity-{{ issue.severity }}">{{ issue.severity|upper }}</span>
-          </div>
+      <section class="card ops-overview">
+        <p class="eyebrow">What needs attention first</p>
+        <h2>{{ issue_overview.headline }}</h2>
+        <p class="issue-summary">{{ issue_overview.guidance }}</p>
+      </section>
 
-          <p class="issue-summary">{{ issue.example_message or "No sample message returned." }}</p>
+      <section class="issue-list">
+        {% for issue in issues %}
+        <details class="card issue-row" {% if loop.first %}open{% endif %}>
+          <summary class="issue-summary-row">
+            <div>
+              <p class="eyebrow">{{ issue.fix.component }}</p>
+              <h2>{{ issue.title }}</h2>
+              <p class="issue-subtext">
+                {{ issue.count }} occurrence{{ "" if issue.count == 1 else "s" }} in the last {{ minutes }} minutes
+                {% if issue.role == "symptom" %}<span class="chip chip-muted">Related symptom</span>{% endif %}
+              </p>
+            </div>
+            <div class="issue-summary-right">
+              <span class="severity-pill severity-{{ issue.severity }}">{{ issue.severity|upper }}</span>
+              <span class="issue-action-label">{{ issue.fix.action_label }}</span>
+            </div>
+          </summary>
 
           <div class="issue-meta-grid">
             <div>
@@ -104,10 +123,15 @@
               <strong>{{ issue.last_seen or "-" }}</strong>
             </div>
             <div>
-              <span class="meta-label">Suggested risk</span>
+              <span class="meta-label">Risk</span>
               <strong>{{ issue.fix.risk|title }}</strong>
             </div>
           </div>
+
+          <section class="impact-block">
+            <h3>What this means</h3>
+            <p class="issue-summary">{{ issue.summary }}</p>
+          </section>
 
           <section class="impact-block">
             <h3>Affected resources</h3>
@@ -116,7 +140,7 @@
               <li>
                 <strong>{{ resource.name }}</strong>
                 <span class="chip chip-muted">{{ resource.kind|replace('_', ' ')|title }}</span>
-                {% if resource.id %}<code>{{ resource.id }}</code>{% endif %}
+                {% if resource.id %}<div class="resource-id"><code>{{ resource.id }}</code></div>{% endif %}
               </li>
               {% endfor %}
             </ul>
@@ -127,6 +151,9 @@
             <p><strong>{{ issue.fix.action_label }}</strong></p>
             <p>{{ issue.fix.reason }}</p>
             <p>Target component: <strong>{{ issue.fix.component }}</strong></p>
+            {% if issue.example_message %}
+            <p class="raw-message"><strong>Telemetry sample:</strong> {{ issue.example_message }}</p>
+            {% endif %}
           </section>
 
           <div class="issue-actions">
@@ -148,7 +175,7 @@
             <span class="chip chip-muted">Manual review required</span>
             {% endif %}
           </div>
-        </article>
+        </details>
         {% endfor %}
       </section>
       {% elif error_ops_configured %}
