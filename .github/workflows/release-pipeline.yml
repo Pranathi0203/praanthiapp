@@ -197,7 +197,7 @@ jobs:
           import_secret_if_needed 'module.app.azurerm_key_vault_secret.contoso_device_connection_string[0]' 'contoso-device-connection-string'
           import_secret_if_needed 'module.app.azurerm_key_vault_secret.litware_device_connection_string[0]' 'litware-device-connection-string'
           import_secret_if_needed 'module.app.azurerm_key_vault_secret.iothub_eventhub_connection_string[0]' 'iothub-eventhub-connection-string'
-          import_secret_if_needed 'module.app.azurerm_key_vault_secret.application_insights_connection_string[0]' 'applicationinsights-connection-string'
+          import_secret_if_needed 'module.app.azurerm_key_vault_secret.application_insights_connection_string' 'applicationinsights-connection-string'
           import_secret_if_needed 'module.app.azurerm_key_vault_secret.github_dashboard_token[0]' 'github-dashboard-token'
 
       - name: Import existing web app Contributor role assignments if needed
