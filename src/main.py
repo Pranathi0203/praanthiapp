@@ -57,6 +57,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 APP_SECRET = os.getenv("APP_SECRET", "change-me")
 APPINSIGHTS_CONNECTION_STRING = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
+APPLICATION_INSIGHTS_NAME = os.getenv("APPLICATION_INSIGHTS_NAME", os.getenv("APP_INSIGHTS_NAME", ""))
+LOG_ANALYTICS_WORKSPACE_ID = os.getenv("LOG_ANALYTICS_WORKSPACE_ID", "")
+LOG_ANALYTICS_WORKSPACE_RESOURCE_ID = os.getenv("LOG_ANALYTICS_WORKSPACE_RESOURCE_ID", "")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@pranathi.local").lower()
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me-admin")
 CONTOSO_DOMAIN = os.getenv("CONTOSO_DOMAIN", "contoso.com").lower()
@@ -81,7 +84,12 @@ POSTGRES_ADMIN_DB = os.getenv("POSTGRES_ADMIN_DB", "postgres")
 AZURE_SUBSCRIPTION_ID = os.getenv("AZURE_SUBSCRIPTION_ID", "")
 AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP", "")
 AZURE_POSTGRES_SERVER_NAME = os.getenv("AZURE_POSTGRES_SERVER_NAME", "")
+WEBAPP_NAME = os.getenv("WEBAPP_NAME", "")
+FUNCTION_APP_NAME = os.getenv("FUNCTION_APP_NAME", "")
 AZURE_USE_MANAGED_IDENTITY = os.getenv("AZURE_USE_MANAGED_IDENTITY", "true").lower() == "true"
+ALLOW_WEBAPP_RESTART = os.getenv("ALLOW_WEBAPP_RESTART", "true").lower() == "true"
+ALLOW_FUNCTIONAPP_RESTART = os.getenv("ALLOW_FUNCTIONAPP_RESTART", "true").lower() == "true"
+ALLOW_POSTGRES_RESTART = os.getenv("ALLOW_POSTGRES_RESTART", "true").lower() == "true"
 POWERSHELL_EXECUTABLE = os.getenv("POWERSHELL_EXECUTABLE", "pwsh")
 POSTGRES_PLATFORM_ACTION_TIMEOUT_SECONDS = int(
     os.getenv("POSTGRES_PLATFORM_ACTION_TIMEOUT_SECONDS", "1800")
@@ -279,6 +287,375 @@ def get_postgres_admin_script_path() -> str:
         if os.path.exists(candidate):
             return candidate
     return POSTGRES_ADMIN_SCRIPT_CANDIDATES[0]
+
+
+def ensure_azure_cli_login():
+    show = subprocess.run(
+        ["az", "account", "show", "-o", "json"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if show.returncode != 0:
+        if not AZURE_USE_MANAGED_IDENTITY:
+            raise RuntimeError("Azure CLI is not logged in and managed identity is disabled.")
+        subprocess.run(
+            ["az", "login", "--identity", "--output", "none", "--only-show-errors"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    if AZURE_SUBSCRIPTION_ID:
+        subprocess.run(
+            ["az", "account", "set", "--subscription", AZURE_SUBSCRIPTION_ID, "--only-show-errors"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+
+def run_azure_cli_json(args: list[str]) -> dict | list:
+    try:
+        ensure_azure_cli_login()
+        completed = subprocess.run(
+            ["az", *args, "-o", "json", "--only-show-errors"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("Azure CLI is not installed in the web app container.") from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        stdout = (exc.stdout or "").strip()
+        detail = stderr or stdout or "Unknown Azure CLI error."
+        raise RuntimeError(detail) from exc
+
+    raw = (completed.stdout or "").strip()
+    if not raw:
+        return {}
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Azure CLI returned non-JSON output: {raw}") from exc
+
+
+def run_azure_cli_access_token(resource: str) -> str:
+    payload = run_azure_cli_json(["account", "get-access-token", "--resource", resource])
+    token = str((payload or {}).get("accessToken", "")).strip()
+    if not token:
+        raise RuntimeError(f"Azure CLI did not return an access token for resource {resource}.")
+    return token
+
+
+def arm_get(resource_id: str, api_version: str) -> dict[str, Any]:
+    token = run_azure_cli_access_token("https://management.azure.com/")
+    url = "https://management.azure.com{}?api-version={}".format(
+        resource_id,
+        urllib_parse.quote(api_version, safe=""),
+    )
+    req = urllib_request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib_error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"ARM request failed for {resource_id}: HTTP {exc.code} {body}") from exc
+
+
+def post_json_with_token(url: str, token: str, payload: dict[str, Any]) -> dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib_request.Request(
+        url,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=60) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib_error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Log query failed: HTTP {exc.code} {detail}") from exc
+
+
+def is_error_operations_configured() -> bool:
+    has_workspace = bool(LOG_ANALYTICS_WORKSPACE_ID)
+    has_app_insights_lookup = bool(AZURE_SUBSCRIPTION_ID and AZURE_RESOURCE_GROUP and APPLICATION_INSIGHTS_NAME)
+    return has_workspace or has_app_insights_lookup
+
+
+def get_workspace_context() -> dict[str, str]:
+    if LOG_ANALYTICS_WORKSPACE_ID:
+        return {
+            "workspace_id": LOG_ANALYTICS_WORKSPACE_ID,
+            "workspace_resource_id": LOG_ANALYTICS_WORKSPACE_RESOURCE_ID,
+            "app_insights_name": APPLICATION_INSIGHTS_NAME,
+            "resource_group": AZURE_RESOURCE_GROUP,
+            "subscription_id": AZURE_SUBSCRIPTION_ID,
+        }
+
+    if not (AZURE_SUBSCRIPTION_ID and AZURE_RESOURCE_GROUP and APPLICATION_INSIGHTS_NAME):
+        raise RuntimeError(
+            "Set LOG_ANALYTICS_WORKSPACE_ID or configure AZURE_SUBSCRIPTION_ID, AZURE_RESOURCE_GROUP, and APPLICATION_INSIGHTS_NAME."
+        )
+
+    component_resource_id = (
+        f"/subscriptions/{AZURE_SUBSCRIPTION_ID}/resourceGroups/{AZURE_RESOURCE_GROUP}/"
+        f"providers/Microsoft.Insights/components/{APPLICATION_INSIGHTS_NAME}"
+    )
+    component = arm_get(component_resource_id, "2020-02-02")
+    properties = component.get("properties", {})
+    workspace_resource_id = (
+        properties.get("WorkspaceResourceId")
+        or properties.get("workspaceResourceId")
+        or LOG_ANALYTICS_WORKSPACE_RESOURCE_ID
+    )
+    if not workspace_resource_id:
+        raise RuntimeError("Application Insights is not linked to a Log Analytics workspace.")
+
+    workspace = arm_get(str(workspace_resource_id), "2022-10-01")
+    customer_id = (
+        workspace.get("properties", {}).get("customerId")
+        or workspace.get("properties", {}).get("customerID")
+        or LOG_ANALYTICS_WORKSPACE_ID
+    )
+    if not customer_id:
+        raise RuntimeError("Could not resolve the Log Analytics workspace customer id.")
+
+    return {
+        "workspace_id": str(customer_id),
+        "workspace_resource_id": str(workspace_resource_id),
+        "app_insights_name": APPLICATION_INSIGHTS_NAME,
+        "resource_group": AZURE_RESOURCE_GROUP,
+        "subscription_id": AZURE_SUBSCRIPTION_ID,
+    }
+
+
+def build_error_union_query(minutes: int) -> str:
+    window = max(1, minutes)
+    return """
+let windowStart = ago({window}m);
+union isfuzzy=true
+(
+    AppExceptions
+    | where TimeGenerated >= windowStart
+    | project TimeGenerated, SourceTable="AppExceptions", Severity="Error", ErrorType=coalesce(Type, InnermostType, ProblemId), ErrorKey=coalesce(ProblemId, Type, InnermostType, OuterMessage), Message=coalesce(OuterMessage, InnermostMessage, Message), OperationId=OperationId, ResourceId=_ResourceId
+),
+(
+    AppTraces
+    | where TimeGenerated >= windowStart
+    | where SeverityLevel >= 3 or Message has_any ("error", "exception", "failed", "timeout", "deadlock", "forbidden", "unauthorized")
+    | project TimeGenerated, SourceTable="AppTraces", Severity=tostring(SeverityLevel), ErrorType=tostring(column_ifexists("customDimensions", dynamic({{}})).event), ErrorKey=coalesce(tostring(column_ifexists("customDimensions", dynamic({{}})).event), Message), Message=Message, OperationId=OperationId, ResourceId=_ResourceId
+),
+(
+    FunctionAppLogs
+    | where TimeGenerated >= windowStart
+    | where tostring(column_ifexists("Level", "")) =~ "Error" or Message has_any ("error", "exception", "failed", "timeout", "deadlock")
+    | project TimeGenerated, SourceTable="FunctionAppLogs", Severity=tostring(column_ifexists("Level", "")), ErrorType=tostring(column_ifexists("Level", "")), ErrorKey=coalesce(Message, tostring(column_ifexists("Level", ""))), Message=Message, OperationId=tostring(column_ifexists("OperationId", "")), ResourceId=_ResourceId
+),
+(
+    AzureDiagnostics
+    | where TimeGenerated >= windowStart
+    | where tostring(column_ifexists("Message", "")) has_any ("error", "exception", "failed", "timeout", "deadlock", "unauthorized", "forbidden")
+        or tostring(column_ifexists("Level", "")) =~ "Error"
+        or tostring(column_ifexists("status_s", "")) =~ "Failed"
+        or tostring(column_ifexists("ResultType", "")) =~ "Failed"
+    | project TimeGenerated, SourceTable="AzureDiagnostics", Severity=tostring(column_ifexists("Level", "")), ErrorType=tostring(column_ifexists("Category", "")), ErrorKey=coalesce(tostring(column_ifexists("Category", "")), tostring(column_ifexists("Message", ""))), Message=tostring(column_ifexists("Message", "")), OperationId=tostring(column_ifexists("OperationId", "")), ResourceId=_ResourceId
+),
+(
+    PGSQLServerLogs
+    | where TimeGenerated >= windowStart
+    | where Message has_any ("error", "exception", "failed", "timeout", "deadlock", "too many connections", "lock wait", "could not connect", "connection refused")
+    | project TimeGenerated, SourceTable="PGSQLServerLogs", Severity="Error", ErrorType="PGSQLServerLogs", ErrorKey=Message, Message=Message, OperationId="", ResourceId=_ResourceId
+)
+""".format(window=window)
+
+
+def query_log_analytics(workspace_id: str, query: str) -> list[dict[str, Any]]:
+    token = run_azure_cli_access_token("https://api.loganalytics.io")
+    url = f"https://api.loganalytics.io/v1/workspaces/{workspace_id}/query"
+    response = post_json_with_token(url, token, {"query": query})
+    tables = response.get("tables", [])
+    if not tables:
+        return []
+
+    columns = [col.get("name") for col in tables[0].get("columns", [])]
+    rows = tables[0].get("rows", [])
+    return [{columns[index]: row[index] for index in range(min(len(columns), len(row)))} for row in rows]
+
+
+def resource_name_from_id(resource_id: str) -> str:
+    cleaned = (resource_id or "").strip("/")
+    if not cleaned:
+        return "Unknown resource"
+    return cleaned.split("/")[-1]
+
+
+def severity_rank(label: str) -> int:
+    return {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(label, 4)
+
+
+def infer_error_severity(source_table: str, message: str, count: int) -> str:
+    text = f"{source_table} {message}".lower()
+    if source_table == "PGSQLServerLogs" and ("could not connect" in text or "connection refused" in text):
+        return "critical"
+    if "unauthorized" in text or "forbidden" in text or "deadlock" in text:
+        return "high"
+    if count >= 10:
+        return "high"
+    if count >= 3:
+        return "medium"
+    return "low"
+
+
+def classify_error_fix(source_table: str, error_type: str, message: str) -> dict[str, Any]:
+    haystack = " ".join([source_table, error_type, message]).lower()
+    if any(signal in haystack for signal in ["pgsqlserverlogs", "postgres", "psycopg", "could not connect", "connection refused"]):
+        postgres_status = ""
+        try:
+            server_info = get_cached_postgres_platform_action("show-server")
+            postgres_status = str((server_info or {}).get("state") or (server_info or {}).get("status") or "").lower()
+        except Exception:
+            postgres_status = ""
+
+        fix_type = "start_postgres_server" if postgres_status == "stopped" else "restart_postgres_server"
+        action_label = "Start PostgreSQL server" if fix_type == "start_postgres_server" else "Restart PostgreSQL server"
+        return {
+            "fix_type": fix_type,
+            "action_label": action_label,
+            "component": "Azure PostgreSQL Flexible Server",
+            "resource_name": AZURE_POSTGRES_SERVER_NAME or "PostgreSQL server",
+            "resource_kind": "postgresql",
+            "resource_id": AZURE_POSTGRES_SERVER_NAME,
+            "is_available": bool(AZURE_POSTGRES_SERVER_NAME and ALLOW_POSTGRES_RESTART),
+            "risk": "medium",
+            "reason": "The database appears unavailable, so a PostgreSQL server recovery action is the safest bounded fix.",
+        }
+
+    if any(signal in haystack for signal in ["functionapplogs", "service bus", "event hub", "iothub", "function host"]):
+        return {
+            "fix_type": "restart_function_app",
+            "action_label": "Restart Function App",
+            "component": "Azure Function App",
+            "resource_name": FUNCTION_APP_NAME or "Function App",
+            "resource_kind": "functionapp",
+            "resource_id": FUNCTION_APP_NAME,
+            "is_available": bool(FUNCTION_APP_NAME and ALLOW_FUNCTIONAPP_RESTART),
+            "risk": "medium",
+            "reason": "The failure points to the event-driven pipeline, so restarting the Function App is the least disruptive recovery step.",
+        }
+
+    if any(signal in haystack for signal in ["appexceptions", "apptraces", "uvicorn", "fastapi", "internal server error"]):
+        return {
+            "fix_type": "restart_webapp",
+            "action_label": "Restart Web App",
+            "component": "Azure App Service Web App",
+            "resource_name": WEBAPP_NAME or "Web App",
+            "resource_kind": "webapp",
+            "resource_id": WEBAPP_NAME,
+            "is_available": bool(WEBAPP_NAME and ALLOW_WEBAPP_RESTART),
+            "risk": "medium",
+            "reason": "The failures appear to come from the web runtime, so restarting the web app is the safest operational reset.",
+        }
+
+    return {
+        "fix_type": "manual_investigation",
+        "action_label": "Manual investigation",
+        "component": "Unknown component",
+        "resource_name": resource_name_from_id(""),
+        "resource_kind": "unknown",
+        "resource_id": "",
+        "is_available": False,
+        "risk": "unknown",
+        "reason": "No safe automated fix is available for this error signature yet.",
+    }
+
+
+def load_recent_error_operations(minutes: int = 60, limit: int = 12) -> list[dict[str, Any]]:
+    workspace = get_workspace_context()
+    query = """
+{union_query}
+| summarize Count=count(), FirstSeen=min(TimeGenerated), LastSeen=max(TimeGenerated), ExampleMessage=any(Message), ExampleResourceId=any(ResourceId), ExampleOperationId=any(OperationId) by SourceTable, ErrorType, ErrorKey
+| sort by Count desc, LastSeen desc
+| take {limit}
+""".format(union_query=build_error_union_query(minutes), limit=max(1, min(limit, 50)))
+
+    rows = query_log_analytics(workspace["workspace_id"], query)
+    items = []
+    for index, row in enumerate(rows, start=1):
+        source_table = str(row.get("SourceTable", ""))
+        error_type = str(row.get("ErrorType", ""))
+        message = str(row.get("ExampleMessage", ""))
+        count = int(row.get("Count", 0) or 0)
+        fix = classify_error_fix(source_table, error_type, message)
+        example_resource_id = str(row.get("ExampleResourceId", "") or "")
+        affected_resources = [
+            {
+                "name": fix["resource_name"],
+                "kind": fix["resource_kind"],
+                "id": fix["resource_id"],
+            }
+        ]
+        if example_resource_id and example_resource_id != fix["resource_id"]:
+            affected_resources.append(
+                {
+                    "name": resource_name_from_id(example_resource_id),
+                    "kind": "telemetry",
+                    "id": example_resource_id,
+                }
+            )
+
+        severity = infer_error_severity(source_table, message, count)
+        items.append(
+            {
+                "id": f"err-{index}",
+                "source_table": source_table,
+                "error_type": error_type or "Unknown",
+                "error_key": str(row.get("ErrorKey", "")),
+                "count": count,
+                "first_seen": row.get("FirstSeen", ""),
+                "last_seen": row.get("LastSeen", ""),
+                "example_message": message,
+                "operation_id": row.get("ExampleOperationId", ""),
+                "severity": severity,
+                "severity_rank": severity_rank(severity),
+                "fix": fix,
+                "affected_resources": affected_resources,
+            }
+        )
+
+    items.sort(key=lambda item: (item["severity_rank"], -item["count"]))
+    return items
+
+
+def apply_error_fix(fix_type: str):
+    if fix_type == "start_postgres_server":
+        run_postgres_platform_action("start-server")
+        return f"Start requested for {AZURE_POSTGRES_SERVER_NAME}."
+    if fix_type == "restart_postgres_server":
+        run_postgres_platform_action("restart-server")
+        return f"Restart requested for {AZURE_POSTGRES_SERVER_NAME}."
+    if fix_type == "restart_function_app":
+        run_azure_cli_json(
+            ["functionapp", "restart", "--resource-group", AZURE_RESOURCE_GROUP, "--name", FUNCTION_APP_NAME]
+        )
+        return f"Restart requested for {FUNCTION_APP_NAME}."
+    if fix_type == "restart_webapp":
+        run_azure_cli_json(["webapp", "restart", "--resource-group", AZURE_RESOURCE_GROUP, "--name", WEBAPP_NAME])
+        return f"Restart requested for {WEBAPP_NAME}."
+    raise RuntimeError(f"Unsupported fix type: {fix_type}")
 
 
 def run_postgres_platform_action(action: str, **kwargs: str) -> dict | list:
@@ -995,6 +1372,38 @@ def load_github_dashboard_context(request: Request, msg: str = "", error: str = 
     )
 
 
+def load_error_operations_context(request: Request, msg: str = "", error: str = "", minutes: int = 60):
+    session_admin = require_admin_session(request)
+    if not session_admin:
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    issues: list[dict[str, Any]] = []
+    scan_error = error
+    if is_error_operations_configured():
+        try:
+            issues = load_recent_error_operations(minutes=minutes)
+        except Exception as exc:
+            record_exception_to_telemetry(exc, action="scan_recent_errors")
+            scan_error = str(exc)
+
+    return templates.TemplateResponse(
+        request,
+        "admin_errors.html",
+        {
+            "request": request,
+            "admin_email": session_admin["email"],
+            "msg": msg,
+            "error": scan_error,
+            "issues": issues,
+            "minutes": minutes,
+            "error_ops_configured": is_error_operations_configured(),
+            "allow_webapp_restart": ALLOW_WEBAPP_RESTART,
+            "allow_functionapp_restart": ALLOW_FUNCTIONAPP_RESTART,
+            "allow_postgres_restart": ALLOW_POSTGRES_RESTART,
+        },
+    )
+
+
 def authenticate_employee(email: str, password: str) -> dict:
     normalized = email.lower().strip()
     org = get_org_for_email(normalized)
@@ -1519,9 +1928,61 @@ def admin_github_dashboard(request: Request, msg: str = "", error: str = ""):
     return load_github_dashboard_context(request, msg=msg, error=error)
 
 
+@app.get("/admin/errors", response_class=HTMLResponse)
+def admin_error_operations(request: Request, msg: str = "", error: str = "", minutes: int = 60):
+    return load_error_operations_context(request, msg=msg, error=error, minutes=minutes)
+
+
 @app.get("/admin/databases", response_class=HTMLResponse)
 def admin_database_dashboard(request: Request, msg: str = "", error: str = ""):
     return load_database_dashboard_context(request, msg=msg, error=error)
+
+
+@app.post("/admin/errors/apply")
+def admin_error_apply_fix(
+    request: Request,
+    fix_type: str = Form(...),
+    source_table: str = Form(""),
+    error_type: str = Form(""),
+    example_message: str = Form(""),
+    minutes: int = Form(60),
+):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    fix = classify_error_fix(source_table, error_type, example_message)
+    if fix["fix_type"] != fix_type:
+        message = "The selected fix no longer matches the latest recommendation. Refresh and review before applying."
+        return RedirectResponse(f"/admin/errors?error={urllib_parse.quote_plus(message)}", status_code=303)
+
+    if not fix["is_available"]:
+        message = f"{fix['action_label']} is not enabled for this environment."
+        return RedirectResponse(f"/admin/errors?error={urllib_parse.quote_plus(message)}", status_code=303)
+
+    try:
+        result_message = apply_error_fix(fix_type)
+        return RedirectResponse(
+            f"/admin/errors?minutes={minutes}&msg={urllib_parse.quote_plus(result_message)}",
+            status_code=303,
+        )
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="apply_error_fix", fix_type=fix_type)
+        return RedirectResponse(
+            f"/admin/errors?minutes={minutes}&error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+
+@app.post("/admin/errors/deny")
+def admin_error_deny_fix(request: Request, minutes: int = Form(60), fix_label: str = Form("fix")):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    message = f"{fix_label} was denied. No automated action was taken."
+    return RedirectResponse(
+        f"/admin/errors?minutes={minutes}&msg={urllib_parse.quote_plus(message)}",
+        status_code=303,
+    )
 
 
 @app.post("/admin/github/approve")

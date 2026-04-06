@@ -84,7 +84,13 @@ locals {
     "AZURE_SUBSCRIPTION_ID"               = data.azurerm_client_config.current.subscription_id
     "AZURE_RESOURCE_GROUP"                = data.azurerm_resource_group.rg.name
     "AZURE_POSTGRES_SERVER_NAME"          = local.postgresql_server_name
+    "APPLICATION_INSIGHTS_NAME"           = azurerm_application_insights.observability.name
+    "WEBAPP_NAME"                         = var.webapp_name
+    "FUNCTION_APP_NAME"                   = local.function_app_name
     "AZURE_USE_MANAGED_IDENTITY"          = "true"
+    "ALLOW_WEBAPP_RESTART"                = "true"
+    "ALLOW_FUNCTIONAPP_RESTART"           = "true"
+    "ALLOW_POSTGRES_RESTART"              = "true"
     "REDIS_URL"                           = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.redis_url.versionless_id})"
     "APIM_LOGIN_PATH"                     = "/auth/login"
     "APIM_SIGNUP_PATH"                    = "/auth/signup"
