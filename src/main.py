@@ -66,7 +66,7 @@ LOG_ANALYTICS_WORKSPACE_RESOURCE_ID = os.getenv("LOG_ANALYTICS_WORKSPACE_RESOURC
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
-AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
 ERROR_ANALYSIS_USE_AZURE_OPENAI = os.getenv("ERROR_ANALYSIS_USE_AZURE_OPENAI", "true").lower() == "true"
 ERROR_ANALYSIS_TIMEOUT_SECONDS = int(os.getenv("ERROR_ANALYSIS_TIMEOUT_SECONDS", "45"))
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@pranathi.local").lower()
@@ -849,7 +849,7 @@ def call_azure_openai_json(system_prompt: str, user_payload: dict[str, Any]) -> 
             {"role": "user", "content": json_dumps_compact(user_payload)},
         ],
         "temperature": 0.1,
-        "max_tokens": 3000,
+        "max_completion_tokens": 3000,
     }
     response = post_json_with_headers(
         url,

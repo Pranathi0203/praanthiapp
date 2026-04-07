@@ -47,15 +47,15 @@ variable "azure_openai_public_network_access_enabled" {
 }
 variable "azure_openai_deployment_name" {
   type    = string
-  default = "gpt-4-1-mini"
+  default = "gpt-4o-mini"
 }
 variable "azure_openai_model_name" {
   type    = string
-  default = "gpt-4.1-mini"
+  default = "gpt-4o-mini"
 }
 variable "azure_openai_model_version" {
   type    = string
-  default = "2025-04-14"
+  default = "2025-01-01-preview"
 }
 variable "azure_openai_deployment_sku_name" {
   type    = string
