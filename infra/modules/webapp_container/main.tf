@@ -274,8 +274,8 @@ resource "azurerm_cognitive_deployment" "openai" {
     version = var.azure_openai_model_version
   }
 
-  sku {
-    name     = var.azure_openai_deployment_sku_name
+  scale {
+    type     = var.azure_openai_deployment_sku_name
     capacity = var.azure_openai_deployment_capacity
   }
 }
