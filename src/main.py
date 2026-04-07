@@ -27,6 +27,8 @@ else:  # pragma: no cover - exercised via env var in deployed environments
 import psycopg
 from azure.monitor.opentelemetry import configure_azure_monitor
 from fastapi import FastAPI, Form, Header, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -183,6 +185,7 @@ def log_event(level: int, event_name: str, **fields: Any):
             "trace_id": get_trace_id(),
             "service": DATADOG_SERVICE,
             "service_version": DATADOG_VERSION,
+            "log_level": logging.getLevelName(level),
             **fields,
             **get_datadog_log_context(),
         }
@@ -225,10 +228,45 @@ setup_telemetry()
 
 def record_exception_to_telemetry(exc: Exception, **fields: Any):
     log_event(logging.ERROR, "application_exception", error_type=type(exc).__name__, error=str(exc), **fields)
+    tc = _get_ai_client()
+    if tc:
+        tc.context.operation.id = get_trace_id() or get_request_id()
+        tc.track_exception(
+            exception=exc,
+            properties={k: str(v) for k, v in _compact_fields(fields).items()},
+        )
+        tc.flush()
     span = trace.get_current_span()
     if span and span.is_recording():
         span.record_exception(exc)
         span.set_status(Status(StatusCode.ERROR))
+
+
+def get_http_log_level(status_code: int) -> int:
+    if status_code >= 500:
+        return logging.ERROR
+    if status_code >= 400:
+        return logging.WARNING
+    return logging.INFO
+
+
+def record_http_failure_to_telemetry(
+    request: Request,
+    *,
+    status_code: int,
+    detail: Any,
+    event_name: str,
+    **fields: Any,
+):
+    log_event(
+        get_http_log_level(status_code),
+        event_name,
+        status_code=status_code,
+        method=request.method,
+        path=request.url.path,
+        detail=detail if isinstance(detail, str) else json.dumps(detail),
+        **fields,
+    )
 
 
 def with_database_name(base_url: str, database_name: str) -> str:
@@ -927,13 +965,16 @@ def verify_mobile_token(token: str) -> dict:
     try:
         payload = _mobile_token_serializer.loads(token, max_age=60 * 60 * 24 * 7)
     except SignatureExpired as exc:
+        log_event(logging.WARNING, "mobile_token_expired")
         raise HTTPException(status_code=401, detail="Session expired. Please log in again.") from exc
     except BadSignature as exc:
+        log_event(logging.WARNING, "mobile_token_invalid")
         raise HTTPException(status_code=401, detail="Invalid mobile session token.") from exc
 
     email = payload.get("email")
     organization = payload.get("organization")
     if not email or not organization:
+        log_event(logging.WARNING, "mobile_token_incomplete")
         raise HTTPException(status_code=401, detail="Incomplete mobile session token.")
 
     return {"email": email, "organization": organization}
@@ -1572,6 +1613,7 @@ def authenticate_employee(email: str, password: str) -> dict:
     normalized = email.lower().strip()
     org = get_org_for_email(normalized)
     if not org:
+        log_event(logging.WARNING, "employee_org_validation_failed", user_email=normalized)
         raise HTTPException(
             status_code=400,
             detail=f"Only {CONTOSO_DOMAIN} and {LITWARE_DOMAIN} emails are allowed.",
@@ -1588,6 +1630,7 @@ def authenticate_employee(email: str, password: str) -> dict:
                 )
                 row = cur.fetchone()
                 if not row:
+                    log_event(logging.WARNING, "employee_login_failed", user_email=normalized, organization=org)
                     raise HTTPException(status_code=401, detail="Invalid email or password.")
     except HTTPException:
         raise
@@ -1602,12 +1645,14 @@ def create_employee_account(email: str, password: str) -> dict:
     normalized = email.lower().strip()
     org = get_org_for_email(normalized)
     if not org:
+        log_event(logging.WARNING, "employee_org_validation_failed", user_email=normalized)
         raise HTTPException(
             status_code=400,
             detail=f"Only {CONTOSO_DOMAIN} and {LITWARE_DOMAIN} emails are allowed.",
         )
 
     if len(password) < 8:
+        log_event(logging.WARNING, "employee_password_validation_failed", user_email=normalized)
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
 
     try:
@@ -1617,6 +1662,7 @@ def create_employee_account(email: str, password: str) -> dict:
             with conn.cursor() as cur:
                 cur.execute("SELECT id FROM app_users WHERE email = %s", (normalized,))
                 if cur.fetchone():
+                    log_event(logging.WARNING, "employee_signup_conflict", user_email=normalized, organization=org)
                     raise HTTPException(status_code=409, detail="Email already exists.")
 
                 cur.execute(
@@ -1667,6 +1713,14 @@ def load_attendance_history(user_email: str, organization: str, limit: int = 20)
 def queue_attendance_event(user_email: str, organization: str, action: str, source: str):
     normalized_action = action.lower().strip()
     if normalized_action not in {"punch_in", "punch_out"}:
+        log_event(
+            logging.WARNING,
+            "attendance_action_validation_failed",
+            user_email=user_email,
+            organization=organization,
+            attendance_action=normalized_action,
+            source=source,
+        )
         raise HTTPException(status_code=400, detail="Invalid attendance action.")
 
     payload = {
@@ -1785,10 +1839,12 @@ def build_health_payload() -> tuple[dict[str, Any], int]:
 
 def get_mobile_user_from_header(authorization: str | None) -> dict:
     if not authorization:
+        log_event(logging.WARNING, "mobile_auth_header_missing")
         raise HTTPException(status_code=401, detail="Authorization header is required.")
 
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
+        log_event(logging.WARNING, "mobile_auth_header_invalid", authorization_scheme=scheme or "missing")
         raise HTTPException(status_code=401, detail="Authorization header must use Bearer token.")
 
     return verify_mobile_token(token)
@@ -1988,7 +2044,7 @@ async def add_request_context(request: Request, call_next):
 
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
     response.headers["X-Request-ID"] = request_id
-    level = logging.INFO if response.status_code < 500 else logging.ERROR
+    level = get_http_log_level(response.status_code)
     log_event(
         level,
         "http_request_completed",
@@ -1999,6 +2055,29 @@ async def add_request_context(request: Request, call_next):
     )
     _request_id_context.reset(token)
     return response
+
+
+@app.exception_handler(HTTPException)
+async def app_http_exception_handler(request: Request, exc: HTTPException):
+    record_http_failure_to_telemetry(
+        request,
+        status_code=exc.status_code,
+        detail=exc.detail,
+        event_name="http_exception_raised",
+    )
+    return await http_exception_handler(request, exc)
+
+
+@app.exception_handler(RequestValidationError)
+async def app_validation_exception_handler(request: Request, exc: RequestValidationError):
+    record_http_failure_to_telemetry(
+        request,
+        status_code=422,
+        detail=exc.errors(),
+        event_name="request_validation_failed",
+        error_count=len(exc.errors()),
+    )
+    return await request_validation_exception_handler(request, exc)
 
 
 @app.get("/health/live")

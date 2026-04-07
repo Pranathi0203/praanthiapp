@@ -202,6 +202,203 @@ def sanitize_text(value: str) -> str:
     return " ".join((value or "").strip().split())
 
 
+def dedupe_preserve_order(values: List[str]) -> List[str]:
+    seen = set()
+    ordered: List[str] = []
+    for value in values:
+        cleaned = sanitize_text(value)
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(cleaned)
+    return ordered
+
+
+def parse_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def build_resource_reference(resource_id: str, component: str, context: Dict[str, Any]) -> Dict[str, str]:
+    cleaned_resource_id = sanitize_text(resource_id)
+    normalized = cleaned_resource_id.lower()
+    if "microsoft.dbforpostgresql" in normalized:
+        return {
+            "type": "resource",
+            "component": "Azure PostgreSQL Flexible Server",
+            "resource": context.get("postgres_server_name") or cleaned_resource_id or component,
+            "file": "",
+            "line": "",
+        }
+    if "microsoft.web/sites" in normalized and context.get("function_app_name") and context["function_app_name"].lower() in normalized:
+        return {
+            "type": "resource",
+            "component": "Azure Function App",
+            "resource": context["function_app_name"],
+            "file": "",
+            "line": "",
+        }
+    if "microsoft.web/sites" in normalized:
+        return {
+            "type": "resource",
+            "component": "Azure App Service Web App",
+            "resource": context.get("webapp_name") or cleaned_resource_id or component,
+            "file": "",
+            "line": "",
+        }
+    if cleaned_resource_id:
+        return {
+            "type": "resource",
+            "component": component or "Azure resource",
+            "resource": cleaned_resource_id,
+            "file": "",
+            "line": "",
+        }
+    return {
+        "type": "unknown",
+        "component": component or "unknown",
+        "resource": "",
+        "file": "",
+        "line": "",
+    }
+
+
+def infer_occurrence_location(row: Dict[str, Any], component: str, context: Dict[str, Any]) -> Dict[str, str]:
+    details = sanitize_text(row.get("ExampleDetails", ""))
+    for token in details.replace("(", " ").replace(")", " ").replace(",", " ").split():
+        if ":" not in token:
+            continue
+        left, right = token.rsplit(":", 1)
+        if left.endswith(".py") and right.isdigit():
+            return {
+                "type": "code",
+                "component": component or "Application code",
+                "resource": context.get("webapp_name") or "",
+                "file": left,
+                "line": right,
+            }
+
+    return build_resource_reference(str(row.get("ExampleResourceId", "")), component, context)
+
+
+def infer_severity_assessment(row: Dict[str, Any], fix_proposal: Dict[str, Any]) -> Dict[str, Any]:
+    message = " ".join(
+        [
+            sanitize_text(row.get("SourceTable", "")).lower(),
+            sanitize_text(row.get("ErrorType", "")).lower(),
+            sanitize_text(row.get("ExampleMessage", "")).lower(),
+            sanitize_text(row.get("ExampleDetails", "")).lower(),
+        ]
+    )
+    count = parse_int(row.get("Count"), 1)
+
+    label = "medium"
+    score = 5
+    rationale = "The failure is notable but does not yet look like a broad outage."
+
+    if any(signal in message for signal in ["stopped state", "server is stopped", "connection refused", "could not connect"]):
+        label = "critical"
+        score = 9
+        rationale = "This looks like a hard dependency outage that can block core application paths."
+    elif any(signal in message for signal in ["timeout", "deadlock", "too many connections", "internal server error"]):
+        label = "high"
+        score = 8
+        rationale = "The error indicates an active runtime or dependency problem that is likely affecting users."
+    elif count >= 10:
+        label = "high"
+        score = 7
+        rationale = "The same issue is recurring frequently, which raises its operational impact."
+    elif count == 1 and fix_proposal["fix_type"] == "manual_investigation":
+        label = "low"
+        score = 3
+        rationale = "This appears to be isolated and there is no safe automated remediation yet."
+
+    return {"label": label, "score": score, "rationale": rationale}
+
+
+def build_why_it_occurred(row: Dict[str, Any], fix_proposal: Dict[str, Any]) -> str:
+    source_table = sanitize_text(row.get("SourceTable", ""))
+    error_type = sanitize_text(row.get("ErrorType", ""))
+    message = sanitize_text(row.get("ExampleMessage", ""))
+
+    parts = []
+    if error_type:
+        parts.append("Error type '{}' was observed in {}.".format(error_type, source_table or "telemetry"))
+    elif source_table:
+        parts.append("A failure signal was observed in {}.".format(source_table))
+
+    if message:
+        parts.append("Example message: '{}'.".format(message))
+
+    parts.append(fix_proposal["reason"])
+    return " ".join(parts)
+
+
+def build_recommended_fix_summary(fix_proposal: Dict[str, Any], fix_available: bool, blocked_reason: str) -> Dict[str, Any]:
+    summary = {
+        "action": fix_proposal["fix_type"],
+        "component": fix_proposal["component"],
+        "automation_safe": fix_proposal["automation_safe"],
+        "risk": fix_proposal["risk"],
+        "why": fix_proposal["reason"],
+        "available": fix_available,
+        "blocked_reason": blocked_reason,
+    }
+    if fix_proposal["fix_type"] == "manual_investigation":
+        summary["label"] = "Manual investigation"
+    else:
+        summary["label"] = fix_proposal["fix_type"].replace("_", " ").title()
+    return summary
+
+
+def build_error_diagnosis(row: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    fix_proposal = classify_fix_candidate(
+        source_table=sanitize_text(row.get("SourceTable", "")),
+        error_type=sanitize_text(row.get("ErrorType", "")),
+        message=" ".join(
+            [
+                sanitize_text(row.get("ExampleMessage", "")),
+                sanitize_text(row.get("ExampleDetails", "")),
+            ]
+        ),
+    )
+
+    fix_available = False
+    blocked_reason = ""
+    if fix_proposal["automation_safe"]:
+        try:
+            ensure_fix_allowed(fix_proposal["fix_type"], context)
+            fix_available = True
+        except RuntimeError as exc:
+            blocked_reason = str(exc)
+
+    return {
+        "error_key": sanitize_text(row.get("ErrorKey", "")),
+        "source_table": sanitize_text(row.get("SourceTable", "")),
+        "error_type": sanitize_text(row.get("ErrorType", "")),
+        "occurrences": parse_int(row.get("Count"), 0),
+        "first_seen": row.get("FirstSeen", ""),
+        "last_seen": row.get("LastSeen", ""),
+        "example_message": sanitize_text(row.get("ExampleMessage", "")),
+        "example_details": sanitize_text(row.get("ExampleDetails", "")),
+        "operation_ids": dedupe_preserve_order(
+            [
+                str(row.get("ExampleOperationId", "")),
+                str(row.get("RelatedOperationId", "")),
+            ]
+        ),
+        "severity": infer_severity_assessment(row, fix_proposal),
+        "where_it_occurred": infer_occurrence_location(row, fix_proposal["component"], context),
+        "why_it_occurred": build_why_it_occurred(row, fix_proposal),
+        "recommended_fix": build_recommended_fix_summary(fix_proposal, fix_available, blocked_reason),
+    }
+
+
 def classify_fix_candidate(source_table: str, error_type: str, message: str) -> Dict[str, Any]:
     haystack = " ".join(
         [
@@ -396,19 +593,22 @@ union isfuzzy=true
 (
     AppExceptions
     | where TimeGenerated >= windowStart
-    | project TimeGenerated, SourceTable="AppExceptions", Severity="Error", ErrorType=coalesce(Type, InnermostType, ProblemId), ErrorKey=coalesce(ProblemId, Type, InnermostType, OuterMessage), Message=coalesce(OuterMessage, InnermostMessage, Message), OperationId=OperationId, ResourceId=_ResourceId
+    | extend Details=tostring(column_ifexists("Details", "")), ParsedDetails=tostring(parse_json(column_ifexists("Details", "{}"))[0].rawStack)
+    | project TimeGenerated, SourceTable="AppExceptions", Severity="Error", ErrorType=coalesce(Type, InnermostType, ProblemId), ErrorKey=coalesce(ProblemId, Type, InnermostType, OuterMessage), Message=coalesce(OuterMessage, InnermostMessage, Message), Details=coalesce(ParsedDetails, Details), OperationId=OperationId, ResourceId=_ResourceId
 ),
 (
     AppTraces
     | where TimeGenerated >= windowStart
     | where SeverityLevel >= 3 or Message has_any ("error", "exception", "failed", "timeout", "deadlock", "forbidden", "unauthorized")
-    | project TimeGenerated, SourceTable="AppTraces", Severity=tostring(SeverityLevel), ErrorType=tostring(column_ifexists("customDimensions", dynamic({{}})).event), ErrorKey=coalesce(tostring(column_ifexists("customDimensions", dynamic({{}})).event), Message), Message=Message, OperationId=OperationId, ResourceId=_ResourceId
+    | extend Details=tostring(column_ifexists("customDimensions", dynamic({{}})).detail)
+    | project TimeGenerated, SourceTable="AppTraces", Severity=tostring(SeverityLevel), ErrorType=tostring(column_ifexists("customDimensions", dynamic({{}})).event), ErrorKey=coalesce(tostring(column_ifexists("customDimensions", dynamic({{}})).event), Message), Message=Message, Details=Details, OperationId=OperationId, ResourceId=_ResourceId
 ),
 (
     FunctionAppLogs
     | where TimeGenerated >= windowStart
     | where tostring(column_ifexists("Level", "")) =~ "Error" or Message has_any ("error", "exception", "failed", "timeout", "deadlock")
-    | project TimeGenerated, SourceTable="FunctionAppLogs", Severity=tostring(column_ifexists("Level", "")), ErrorType=tostring(column_ifexists("Level", "")), ErrorKey=coalesce(Message, tostring(column_ifexists("Level", ""))), Message=Message, OperationId=tostring(column_ifexists("OperationId", "")), ResourceId=_ResourceId
+    | extend Details=tostring(column_ifexists("ExceptionDetails", ""))
+    | project TimeGenerated, SourceTable="FunctionAppLogs", Severity=tostring(column_ifexists("Level", "")), ErrorType=tostring(column_ifexists("Level", "")), ErrorKey=coalesce(Message, tostring(column_ifexists("Level", ""))), Message=Message, Details=Details, OperationId=tostring(column_ifexists("OperationId", "")), ResourceId=_ResourceId
 ),
 (
     AzureDiagnostics
@@ -417,13 +617,13 @@ union isfuzzy=true
         or tostring(column_ifexists("Level", "")) =~ "Error"
         or tostring(column_ifexists("status_s", "")) =~ "Failed"
         or tostring(column_ifexists("ResultType", "")) =~ "Failed"
-    | project TimeGenerated, SourceTable="AzureDiagnostics", Severity=tostring(column_ifexists("Level", "")), ErrorType=tostring(column_ifexists("Category", "")), ErrorKey=coalesce(tostring(column_ifexists("Category", "")), tostring(column_ifexists("Message", ""))), Message=tostring(column_ifexists("Message", "")), OperationId=tostring(column_ifexists("OperationId", "")), ResourceId=_ResourceId
+    | project TimeGenerated, SourceTable="AzureDiagnostics", Severity=tostring(column_ifexists("Level", "")), ErrorType=tostring(column_ifexists("Category", "")), ErrorKey=coalesce(tostring(column_ifexists("Category", "")), tostring(column_ifexists("Message", ""))), Message=tostring(column_ifexists("Message", "")), Details=tostring(column_ifexists("ResultDescription", "")), OperationId=tostring(column_ifexists("OperationId", "")), ResourceId=_ResourceId
 ),
 (
     PGSQLServerLogs
     | where TimeGenerated >= windowStart
     | where Message has_any ("error", "exception", "failed", "timeout", "deadlock", "too many connections", "lock wait")
-    | project TimeGenerated, SourceTable="PGSQLServerLogs", Severity="Error", ErrorType="PGSQLServerLogs", ErrorKey=Message, Message=Message, OperationId="", ResourceId=_ResourceId
+    | project TimeGenerated, SourceTable="PGSQLServerLogs", Severity="Error", ErrorType="PGSQLServerLogs", ErrorKey=Message, Message=Message, Details="", OperationId="", ResourceId=_ResourceId
 )
 """.format(window=window)
 
@@ -451,6 +651,10 @@ def find_recent_errors_impl(minutes: int = 60, limit: int = 20) -> Dict[str, Any
     query = """
 {union_query}
 | summarize Count=count(), FirstSeen=min(TimeGenerated), LastSeen=max(TimeGenerated), ExampleMessage=any(Message), ExampleResourceId=any(ResourceId), ExampleOperationId=any(OperationId) by SourceTable, ErrorType, ErrorKey
+| join kind=leftouter (
+    {union_query}
+    | summarize ExampleDetails=any(Details), RelatedOperationId=any(OperationId) by SourceTable, ErrorType, ErrorKey
+) on SourceTable, ErrorType, ErrorKey
 | sort by Count desc, LastSeen desc
 | take {limit}
 """.format(union_query=build_union_query(minutes), limit=safe_limit)
@@ -465,23 +669,21 @@ def find_recent_errors_impl(minutes: int = 60, limit: int = 20) -> Dict[str, Any
 
 def analyze_recent_errors_impl(minutes: int = 60, limit: int = 20) -> Dict[str, Any]:
     recent = find_recent_errors_impl(minutes=minutes, limit=limit)
+    fix_context = get_fix_context()
+    diagnoses = [build_error_diagnosis(row, fix_context) for row in recent["errors"]]
     return {
         "generated_at": utc_now_iso(),
         "window_minutes": minutes,
         "workspace": recent["workspace"],
         "error_count": len(recent["errors"]),
         "errors": recent["errors"],
+        "diagnoses": diagnoses,
         "analysis_guidance": (
-            "Analyze the errors above using your knowledge of Azure and Python. "
-            "For each error: identify the root cause, explain why it is happening, "
-            "how errors relate to each other (e.g. one failure causing a cascade), "
-            "and suggest specific fixes. "
-            "Use SourceTable to understand origin (AppExceptions=unhandled exceptions, "
-            "AppTraces=logger output, FunctionAppLogs=Azure Functions runtime, "
-            "AzureDiagnostics=platform-level, PGSQLServerLogs=PostgreSQL). "
-            "Use ErrorType and ExampleMessage as the primary signal for root cause. "
-            "Use ExampleResourceId to identify which Azure resource failed. "
-            "Correlate errors by timestamp (FirstSeen/LastSeen) to find cascades."
+            "Use the diagnoses array first. Each diagnosis includes severity, "
+            "where_it_occurred, why_it_occurred, and recommended_fix. "
+            "If where_it_occurred.file/line are blank, the failure is likely platform-level "
+            "or the telemetry did not include stack information. Use the raw errors only "
+            "for additional detail or cross-error correlation."
         ),
     }
 
@@ -507,6 +709,23 @@ def propose_fix_for_error_impl(
         except RuntimeError as exc:
             blocked_reason = str(exc)
 
+    diagnosis = build_error_diagnosis(
+        {
+            "SourceTable": source_table,
+            "ErrorType": error_type,
+            "ErrorKey": error_type or example_message or source_table,
+            "Count": 1,
+            "FirstSeen": "",
+            "LastSeen": "",
+            "ExampleMessage": example_message,
+            "ExampleDetails": "",
+            "ExampleResourceId": "",
+            "ExampleOperationId": "",
+            "RelatedOperationId": "",
+        },
+        context,
+    )
+
     return {
         "generated_at": utc_now_iso(),
         "input": {
@@ -514,6 +733,7 @@ def propose_fix_for_error_impl(
             "error_type": error_type,
             "example_message": example_message,
         },
+        "diagnosis": diagnosis,
         "proposal": proposal,
         "fix_available": allowed,
         "blocked_reason": blocked_reason,
