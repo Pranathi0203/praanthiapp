@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 import uuid
@@ -62,6 +63,12 @@ APPINSIGHTS_CONNECTION_STRING = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING
 APPLICATION_INSIGHTS_NAME = os.getenv("APPLICATION_INSIGHTS_NAME", os.getenv("APP_INSIGHTS_NAME", ""))
 LOG_ANALYTICS_WORKSPACE_ID = os.getenv("LOG_ANALYTICS_WORKSPACE_ID", "")
 LOG_ANALYTICS_WORKSPACE_RESOURCE_ID = os.getenv("LOG_ANALYTICS_WORKSPACE_RESOURCE_ID", "")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+ERROR_ANALYSIS_USE_AZURE_OPENAI = os.getenv("ERROR_ANALYSIS_USE_AZURE_OPENAI", "true").lower() == "true"
+ERROR_ANALYSIS_TIMEOUT_SECONDS = int(os.getenv("ERROR_ANALYSIS_TIMEOUT_SECONDS", "45"))
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@pranathi.local").lower()
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me-admin")
 CONTOSO_DOMAIN = os.getenv("CONTOSO_DOMAIN", "contoso.com").lower()
@@ -230,12 +237,20 @@ def record_exception_to_telemetry(exc: Exception, **fields: Any):
     log_event(logging.ERROR, "application_exception", error_type=type(exc).__name__, error=str(exc), **fields)
     tc = _get_ai_client()
     if tc:
-        tc.context.operation.id = get_trace_id() or get_request_id()
-        tc.track_exception(
-            exception=exc,
-            properties={k: str(v) for k, v in _compact_fields(fields).items()},
-        )
-        tc.flush()
+        try:
+            tc.context.operation.id = get_trace_id() or get_request_id()
+            tc.track_exception(
+                type=type(exc),
+                value=exc,
+                tb=exc.__traceback__,
+                properties={k: str(v) for k, v in _compact_fields(fields).items()},
+            )
+            tc.flush()
+        except Exception as telemetry_exc:
+            logging.getLogger(__name__).warning(
+                "Application Insights exception tracking failed: %s",
+                telemetry_exc,
+            )
     span = trace.get_current_span()
     if span and span.is_recording():
         span.record_exception(exc)
@@ -412,18 +427,28 @@ def arm_get(resource_id: str, api_version: str) -> dict[str, Any]:
 
 
 def post_json_with_token(url: str, token: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return post_json_with_headers(
+        url,
+        {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        payload,
+    )
+
+
+def post_json_with_headers(
+    url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int = 60
+) -> dict[str, Any]:
     body = json.dumps(payload).encode("utf-8")
     req = urllib_request.Request(
         url,
         data=body,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
+        headers=headers,
         method="POST",
     )
     try:
-        with urllib_request.urlopen(req, timeout=60) as response:
+        with urllib_request.urlopen(req, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib_error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
@@ -434,6 +459,15 @@ def is_error_operations_configured() -> bool:
     has_workspace = bool(LOG_ANALYTICS_WORKSPACE_ID)
     has_app_insights_lookup = bool(AZURE_SUBSCRIPTION_ID and AZURE_RESOURCE_GROUP and APPLICATION_INSIGHTS_NAME)
     return has_workspace or has_app_insights_lookup
+
+
+def is_ai_error_analysis_configured() -> bool:
+    return bool(
+        ERROR_ANALYSIS_USE_AZURE_OPENAI
+        and AZURE_OPENAI_ENDPOINT
+        and AZURE_OPENAI_API_KEY
+        and AZURE_OPENAI_DEPLOYMENT
+    )
 
 
 def get_workspace_context() -> dict[str, str]:
@@ -486,39 +520,41 @@ def get_workspace_context() -> dict[str, str]:
 def build_error_union_query(minutes: int) -> str:
     window = max(1, minutes)
     return """
-let windowStart = ago({window}m);
 union isfuzzy=true
 (
     AppExceptions
-    | where TimeGenerated >= windowStart
-    | project TimeGenerated, SourceTable="AppExceptions", Severity="Error", ErrorType=coalesce(Type, InnermostType, ProblemId), ErrorKey=coalesce(ProblemId, Type, InnermostType, OuterMessage), Message=coalesce(OuterMessage, InnermostMessage, Message), OperationId=OperationId, ResourceId=_ResourceId
+    | where TimeGenerated >= ago({window}m)
+    | extend Details=tostring(column_ifexists("Details", "")), ParsedDetails=tostring(parse_json(column_ifexists("Details", "{{}}"))[0].rawStack)
+    | project TimeGenerated, SourceTable="AppExceptions", Severity="Error", ErrorType=coalesce(Type, InnermostType, ProblemId), ErrorKey=coalesce(ProblemId, Type, InnermostType, OuterMessage), Message=coalesce(OuterMessage, InnermostMessage, Message), Details=coalesce(ParsedDetails, Details), OperationId=OperationId, ResourceId=_ResourceId
 ),
 (
     AppTraces
-    | where TimeGenerated >= windowStart
+    | where TimeGenerated >= ago({window}m)
     | where SeverityLevel >= 3 or Message has_any ("error", "exception", "failed", "timeout", "deadlock", "forbidden", "unauthorized")
-    | project TimeGenerated, SourceTable="AppTraces", Severity=tostring(SeverityLevel), ErrorType=tostring(column_ifexists("customDimensions", dynamic({{}})).event), ErrorKey=coalesce(tostring(column_ifexists("customDimensions", dynamic({{}})).event), Message), Message=Message, OperationId=OperationId, ResourceId=_ResourceId
+    | extend Details=tostring(column_ifexists("customDimensions", dynamic({{}})).detail)
+    | project TimeGenerated, SourceTable="AppTraces", Severity=tostring(SeverityLevel), ErrorType=tostring(column_ifexists("customDimensions", dynamic({{}})).event), ErrorKey=coalesce(tostring(column_ifexists("customDimensions", dynamic({{}})).event), Message), Message=Message, Details=Details, OperationId=OperationId, ResourceId=_ResourceId
 ),
 (
     FunctionAppLogs
-    | where TimeGenerated >= windowStart
+    | where TimeGenerated >= ago({window}m)
     | where tostring(column_ifexists("Level", "")) =~ "Error" or Message has_any ("error", "exception", "failed", "timeout", "deadlock")
-    | project TimeGenerated, SourceTable="FunctionAppLogs", Severity=tostring(column_ifexists("Level", "")), ErrorType=tostring(column_ifexists("Level", "")), ErrorKey=coalesce(Message, tostring(column_ifexists("Level", ""))), Message=Message, OperationId=tostring(column_ifexists("OperationId", "")), ResourceId=_ResourceId
+    | extend Details=tostring(column_ifexists("ExceptionDetails", ""))
+    | project TimeGenerated, SourceTable="FunctionAppLogs", Severity=tostring(column_ifexists("Level", "")), ErrorType=tostring(column_ifexists("Level", "")), ErrorKey=coalesce(Message, tostring(column_ifexists("Level", ""))), Message=Message, Details=Details, OperationId=tostring(column_ifexists("OperationId", "")), ResourceId=_ResourceId
 ),
 (
     AzureDiagnostics
-    | where TimeGenerated >= windowStart
+    | where TimeGenerated >= ago({window}m)
     | where tostring(column_ifexists("Message", "")) has_any ("error", "exception", "failed", "timeout", "deadlock", "unauthorized", "forbidden")
         or tostring(column_ifexists("Level", "")) =~ "Error"
         or tostring(column_ifexists("status_s", "")) =~ "Failed"
         or tostring(column_ifexists("ResultType", "")) =~ "Failed"
-    | project TimeGenerated, SourceTable="AzureDiagnostics", Severity=tostring(column_ifexists("Level", "")), ErrorType=tostring(column_ifexists("Category", "")), ErrorKey=coalesce(tostring(column_ifexists("Category", "")), tostring(column_ifexists("Message", ""))), Message=tostring(column_ifexists("Message", "")), OperationId=tostring(column_ifexists("OperationId", "")), ResourceId=_ResourceId
+    | project TimeGenerated, SourceTable="AzureDiagnostics", Severity=tostring(column_ifexists("Level", "")), ErrorType=tostring(column_ifexists("Category", "")), ErrorKey=coalesce(tostring(column_ifexists("Category", "")), tostring(column_ifexists("Message", ""))), Message=tostring(column_ifexists("Message", "")), Details=tostring(column_ifexists("ResultDescription", "")), OperationId=tostring(column_ifexists("OperationId", "")), ResourceId=_ResourceId
 ),
 (
     PGSQLServerLogs
-    | where TimeGenerated >= windowStart
+    | where TimeGenerated >= ago({window}m)
     | where Message has_any ("error", "exception", "failed", "timeout", "deadlock", "too many connections", "lock wait", "could not connect", "connection refused")
-    | project TimeGenerated, SourceTable="PGSQLServerLogs", Severity="Error", ErrorType="PGSQLServerLogs", ErrorKey=Message, Message=Message, OperationId="", ResourceId=_ResourceId
+    | project TimeGenerated, SourceTable="PGSQLServerLogs", Severity="Error", ErrorType="PGSQLServerLogs", ErrorKey=Message, Message=Message, Details="", OperationId="", ResourceId=_ResourceId
 )
 """.format(window=window)
 
@@ -562,6 +598,357 @@ def infer_error_severity(source_table: str, message: str, count: int) -> str:
     return "low"
 
 
+def sanitize_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def parse_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def dedupe_resources(resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str, str]] = set()
+    unique: list[dict[str, Any]] = []
+    for resource in resources:
+        normalized = {
+            "name": sanitize_text(resource.get("name")),
+            "kind": sanitize_text(resource.get("kind")),
+            "id": sanitize_text(resource.get("id")),
+        }
+        key = (normalized["name"].lower(), normalized["kind"].lower(), normalized["id"].lower())
+        if not normalized["name"] or key in seen:
+            continue
+        seen.add(key)
+        unique.append(normalized)
+    return unique
+
+
+def normalize_repo_path(file_path: str) -> str:
+    cleaned = sanitize_text(file_path)
+    if cleaned.startswith("/app/"):
+        return f"src/{cleaned.removeprefix('/app/')}"
+    return cleaned
+
+
+def extract_code_location(details: str) -> tuple[str, str]:
+    detail_text = sanitize_text(details)
+    if not detail_text:
+        return "", ""
+
+    file_match = re.search(r'File "([^"]+)", line (\d+)', detail_text)
+    if file_match:
+        return normalize_repo_path(file_match.group(1)), file_match.group(2)
+
+    path_match = re.search(r'([A-Za-z0-9_./-]+\.py):(\d+)', detail_text)
+    if path_match:
+        return normalize_repo_path(path_match.group(1)), path_match.group(2)
+
+    return "", ""
+
+
+def json_dumps_compact(payload: Any) -> str:
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+
+
+def parse_json_response_text(content: Any) -> Any:
+    if isinstance(content, list):
+        text_parts = []
+        for item in content:
+            if isinstance(item, dict):
+                text_parts.append(str(item.get("text", "")))
+            else:
+                text_parts.append(str(item))
+        text = "".join(text_parts).strip()
+    else:
+        text = str(content or "").strip()
+
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    return json.loads(text)
+
+
+def build_fix_metadata(fix_type: str, *, reason: str = "", risk: str = "medium") -> dict[str, Any]:
+    if fix_type == "start_postgres_server":
+        return {
+            "fix_type": fix_type,
+            "action_label": "Start PostgreSQL server",
+            "component": "Azure PostgreSQL Flexible Server",
+            "component_group": "postgresql",
+            "resource_name": AZURE_POSTGRES_SERVER_NAME or "PostgreSQL server",
+            "resource_kind": "postgresql",
+            "resource_id": AZURE_POSTGRES_SERVER_NAME,
+            "is_available": bool(AZURE_POSTGRES_SERVER_NAME and ALLOW_POSTGRES_RESTART),
+            "risk": risk,
+            "reason": reason or "Start the PostgreSQL server to restore database availability.",
+            "resources": dedupe_resources(
+                [
+                    {
+                        "name": AZURE_POSTGRES_SERVER_NAME or "PostgreSQL server",
+                        "kind": "postgresql",
+                        "id": AZURE_POSTGRES_SERVER_NAME,
+                    }
+                ]
+            ),
+        }
+    if fix_type == "restart_postgres_server":
+        return {
+            "fix_type": fix_type,
+            "action_label": "Restart PostgreSQL server",
+            "component": "Azure PostgreSQL Flexible Server",
+            "component_group": "postgresql",
+            "resource_name": AZURE_POSTGRES_SERVER_NAME or "PostgreSQL server",
+            "resource_kind": "postgresql",
+            "resource_id": AZURE_POSTGRES_SERVER_NAME,
+            "is_available": bool(AZURE_POSTGRES_SERVER_NAME and ALLOW_POSTGRES_RESTART),
+            "risk": risk,
+            "reason": reason or "Restart the PostgreSQL server to recover database availability.",
+            "resources": dedupe_resources(
+                [
+                    {
+                        "name": AZURE_POSTGRES_SERVER_NAME or "PostgreSQL server",
+                        "kind": "postgresql",
+                        "id": AZURE_POSTGRES_SERVER_NAME,
+                    }
+                ]
+            ),
+        }
+    if fix_type == "restart_function_app":
+        return {
+            "fix_type": fix_type,
+            "action_label": "Restart Function App",
+            "component": "Azure Function App",
+            "component_group": "functionapp",
+            "resource_name": FUNCTION_APP_NAME or "Function App",
+            "resource_kind": "functionapp",
+            "resource_id": FUNCTION_APP_NAME,
+            "is_available": bool(FUNCTION_APP_NAME and ALLOW_FUNCTIONAPP_RESTART),
+            "risk": risk,
+            "reason": reason or "Restart the Function App to recover the event-driven pipeline.",
+            "resources": dedupe_resources(
+                [
+                    {
+                        "name": FUNCTION_APP_NAME or "Function App",
+                        "kind": "functionapp",
+                        "id": FUNCTION_APP_NAME,
+                    }
+                ]
+            ),
+        }
+    if fix_type == "restart_webapp":
+        return {
+            "fix_type": fix_type,
+            "action_label": "Restart Web App",
+            "component": "Azure App Service Web App",
+            "component_group": "webapp",
+            "resource_name": WEBAPP_NAME or "Web App",
+            "resource_kind": "webapp",
+            "resource_id": WEBAPP_NAME,
+            "is_available": bool(WEBAPP_NAME and ALLOW_WEBAPP_RESTART),
+            "risk": risk,
+            "reason": reason or "Restart the web app to recover the application runtime.",
+            "resources": dedupe_resources(
+                [
+                    {
+                        "name": WEBAPP_NAME or "Web App",
+                        "kind": "webapp",
+                        "id": WEBAPP_NAME,
+                    }
+                ]
+            ),
+        }
+    return {
+        "fix_type": "manual_investigation",
+        "action_label": "Manual investigation",
+        "component": "Unknown component",
+        "component_group": "unknown",
+        "resource_name": resource_name_from_id(""),
+        "resource_kind": "unknown",
+        "resource_id": "",
+        "is_available": False,
+        "risk": "unknown",
+        "reason": reason or "No safe automated fix is available for this error signature yet.",
+        "resources": [],
+    }
+
+
+def build_fix_catalog() -> list[dict[str, Any]]:
+    return [
+        {
+            "fix_type": "start_postgres_server",
+            "label": "Start PostgreSQL server",
+            "available": bool(AZURE_POSTGRES_SERVER_NAME and ALLOW_POSTGRES_RESTART),
+            "component": "Azure PostgreSQL Flexible Server",
+            "resource_name": AZURE_POSTGRES_SERVER_NAME or "PostgreSQL server",
+        },
+        {
+            "fix_type": "restart_postgres_server",
+            "label": "Restart PostgreSQL server",
+            "available": bool(AZURE_POSTGRES_SERVER_NAME and ALLOW_POSTGRES_RESTART),
+            "component": "Azure PostgreSQL Flexible Server",
+            "resource_name": AZURE_POSTGRES_SERVER_NAME or "PostgreSQL server",
+        },
+        {
+            "fix_type": "restart_function_app",
+            "label": "Restart Function App",
+            "available": bool(FUNCTION_APP_NAME and ALLOW_FUNCTIONAPP_RESTART),
+            "component": "Azure Function App",
+            "resource_name": FUNCTION_APP_NAME or "Function App",
+        },
+        {
+            "fix_type": "restart_webapp",
+            "label": "Restart Web App",
+            "available": bool(WEBAPP_NAME and ALLOW_WEBAPP_RESTART),
+            "component": "Azure App Service Web App",
+            "resource_name": WEBAPP_NAME or "Web App",
+        },
+        {
+            "fix_type": "manual_investigation",
+            "label": "Manual investigation",
+            "available": True,
+            "component": "Operator review",
+            "resource_name": "n/a",
+        },
+    ]
+
+
+def build_resource_catalog() -> list[dict[str, str]]:
+    return dedupe_resources(
+        [
+            {"name": WEBAPP_NAME, "kind": "webapp", "id": WEBAPP_NAME},
+            {"name": FUNCTION_APP_NAME, "kind": "functionapp", "id": FUNCTION_APP_NAME},
+            {"name": AZURE_POSTGRES_SERVER_NAME, "kind": "postgresql", "id": AZURE_POSTGRES_SERVER_NAME},
+            {"name": IOTHUB_NAME, "kind": "iothub", "id": IOTHUB_NAME},
+            {"name": SERVICEBUS_NAMESPACE_NAME, "kind": "servicebus", "id": SERVICEBUS_NAMESPACE_NAME},
+            {"name": APPLICATION_INSIGHTS_NAME, "kind": "telemetry", "id": APPLICATION_INSIGHTS_NAME},
+        ]
+    )
+
+
+def call_azure_openai_json(system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+    if not is_ai_error_analysis_configured():
+        raise RuntimeError(
+            "Azure OpenAI error analysis is not configured. Set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, and AZURE_OPENAI_DEPLOYMENT."
+        )
+
+    url = (
+        f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{urllib_parse.quote(AZURE_OPENAI_DEPLOYMENT, safe='')}"
+        f"/chat/completions?api-version={urllib_parse.quote(AZURE_OPENAI_API_VERSION, safe='')}"
+    )
+    payload = {
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json_dumps_compact(user_payload)},
+        ],
+        "temperature": 0.1,
+        "max_tokens": 3000,
+    }
+    response = post_json_with_headers(
+        url,
+        {"api-key": AZURE_OPENAI_API_KEY, "Content-Type": "application/json"},
+        payload,
+        timeout=ERROR_ANALYSIS_TIMEOUT_SECONDS,
+    )
+    choices = response.get("choices", [])
+    if not choices:
+        raise RuntimeError("Azure OpenAI returned no choices for admin error analysis.")
+    message = (choices[0] or {}).get("message", {})
+    return parse_json_response_text(message.get("content", ""))
+
+
+def fallback_issue_analysis(row: dict[str, Any], fix: dict[str, Any]) -> dict[str, Any]:
+    message = str(row.get("ExampleMessage", ""))
+    details = str(row.get("ExampleDetails", ""))
+    file_path, line_number = extract_code_location(details)
+    count = int(row.get("Count", 0) or 0)
+    severity = infer_error_severity(str(row.get("SourceTable", "")), message, count)
+    affected_resources = list(fix.get("resources", []))
+    example_resource_id = str(row.get("ExampleResourceId", "") or "")
+    if example_resource_id:
+        affected_resources.append(
+            {
+                "name": resource_name_from_id(example_resource_id),
+                "kind": "telemetry",
+                "id": example_resource_id,
+            }
+        )
+    return {
+        "title": describe_issue_title(str(row.get("SourceTable", "")), str(row.get("ErrorType", "")), message, fix),
+        "summary": describe_issue_summary(str(row.get("SourceTable", "")), str(row.get("ErrorType", "")), message, fix),
+        "severity_label": severity,
+        "severity_score": {"critical": 9, "high": 8, "medium": 5, "low": 3}.get(severity, 5),
+        "why_it_occurred": fix["reason"],
+        "where_it_occurred": {
+            "component": fix["component"],
+            "file_path": file_path,
+            "line_number": line_number,
+            "resource": fix["resource_name"],
+        },
+        "recommended_fix_type": fix["fix_type"],
+        "recommended_fix": fix["action_label"],
+        "affected_resources": dedupe_resources(affected_resources),
+        "source": "fallback_rules",
+    }
+
+
+def analyze_error_rows_with_ai(rows: list[dict[str, Any]], minutes: int) -> dict[str, dict[str, Any]]:
+    issue_payload = []
+    for index, row in enumerate(rows, start=1):
+        issue_payload.append(
+            {
+                "issue_id": f"err-{index}",
+                "source_table": sanitize_text(row.get("SourceTable")),
+                "error_type": sanitize_text(row.get("ErrorType")),
+                "error_key": sanitize_text(row.get("ErrorKey")),
+                "occurrences": int(row.get("Count", 0) or 0),
+                "first_seen": str(row.get("FirstSeen", "") or ""),
+                "last_seen": str(row.get("LastSeen", "") or ""),
+                "example_message": sanitize_text(row.get("ExampleMessage")),
+                "example_details": sanitize_text(row.get("ExampleDetails")),
+                "resource_id": sanitize_text(row.get("ExampleResourceId")),
+                "operation_id": sanitize_text(row.get("ExampleOperationId")),
+            }
+        )
+
+    system_prompt = (
+        "You are diagnosing Azure application and platform failures for an admin operations dashboard. "
+        "Analyze each grouped issue from Application Insights and Log Analytics. "
+        "Return strict JSON with the shape {'issues': [...]} and no markdown. "
+        "For each issue include: issue_id, title, summary, severity_label, severity_score, why_it_occurred, "
+        "where_it_occurred, recommended_fix_type, recommended_fix, and affected_resources. "
+        "Severity labels must be one of critical, high, medium, low. Severity score must be an integer from 1 to 10. "
+        "where_it_occurred must be an object with component, file_path, line_number, and resource. "
+        "Use file_path and line_number only when the telemetry clearly supports them; otherwise leave them empty. "
+        "recommended_fix_type must be one of: start_postgres_server, restart_postgres_server, restart_function_app, restart_webapp, manual_investigation. "
+        "Only recommend an automated fix when the evidence supports it. "
+        "affected_resources must be a list of objects with name, kind, and id. "
+        "Prefer the known Azure resources provided to you and mention telemetry resources only when they help explain impact."
+    )
+    response = call_azure_openai_json(
+        system_prompt,
+        {
+            "window_minutes": minutes,
+            "resources": build_resource_catalog(),
+            "fix_catalog": build_fix_catalog(),
+            "issues": issue_payload,
+        },
+    )
+    issues = response.get("issues", [])
+    return {
+        sanitize_text(item.get("issue_id")): item
+        for item in issues
+        if isinstance(item, dict) and sanitize_text(item.get("issue_id"))
+    }
+
+
 def classify_error_fix(source_table: str, error_type: str, message: str) -> dict[str, Any]:
     haystack = " ".join([source_table, error_type, message]).lower()
     if any(
@@ -584,134 +971,68 @@ def classify_error_fix(source_table: str, error_type: str, message: str) -> dict
             postgres_status = ""
 
         fix_type = "start_postgres_server" if postgres_status == "stopped" else "restart_postgres_server"
-        action_label = "Start PostgreSQL server" if fix_type == "start_postgres_server" else "Restart PostgreSQL server"
-        return {
-            "fix_type": fix_type,
-            "action_label": action_label,
-            "component": "Azure PostgreSQL Flexible Server",
-            "component_group": "postgresql",
-            "resource_name": AZURE_POSTGRES_SERVER_NAME or "PostgreSQL server",
-            "resource_kind": "postgresql",
-            "resource_id": AZURE_POSTGRES_SERVER_NAME,
-            "is_available": bool(AZURE_POSTGRES_SERVER_NAME and ALLOW_POSTGRES_RESTART),
-            "risk": "medium",
-            "reason": "The database appears unavailable, so a PostgreSQL server recovery action is the safest bounded fix.",
-            "resources": [
-                {
-                    "name": AZURE_POSTGRES_SERVER_NAME or "PostgreSQL server",
-                    "kind": "postgresql",
-                    "id": AZURE_POSTGRES_SERVER_NAME,
-                }
-            ],
-        }
+        return build_fix_metadata(
+            fix_type,
+            reason="The database appears unavailable, so a PostgreSQL server recovery action is the safest bounded fix.",
+        )
 
     if any(signal in haystack for signal in ["service bus", "servicebus", "queue", "attendance-events"]):
-        return {
-            "fix_type": "restart_function_app",
-            "action_label": "Restart Function App",
-            "component": "Service Bus attendance pipeline",
-            "component_group": "servicebus",
-            "resource_name": SERVICEBUS_NAMESPACE_NAME or "Service Bus namespace",
-            "resource_kind": "servicebus",
-            "resource_id": SERVICEBUS_NAMESPACE_NAME,
-            "is_available": bool(FUNCTION_APP_NAME and ALLOW_FUNCTIONAPP_RESTART),
-            "risk": "medium",
-            "reason": "The failure appears in the queue-processing pipeline, so restarting the Function App is the safest bounded recovery step.",
-            "resources": [
-                {
-                    "name": FUNCTION_APP_NAME or "Function App",
-                    "kind": "functionapp",
-                    "id": FUNCTION_APP_NAME,
-                },
+        fix = build_fix_metadata(
+            "restart_function_app",
+            reason="The failure appears in the queue-processing pipeline, so restarting the Function App is the safest bounded recovery step.",
+        )
+        fix["component"] = "Service Bus attendance pipeline"
+        fix["component_group"] = "servicebus"
+        fix["resource_name"] = SERVICEBUS_NAMESPACE_NAME or "Service Bus namespace"
+        fix["resource_kind"] = "servicebus"
+        fix["resource_id"] = SERVICEBUS_NAMESPACE_NAME
+        fix["resources"] = dedupe_resources(
+            fix["resources"]
+            + [
                 {
                     "name": SERVICEBUS_NAMESPACE_NAME or "Service Bus namespace",
                     "kind": "servicebus",
                     "id": SERVICEBUS_NAMESPACE_NAME,
-                },
-            ],
-        }
+                }
+            ]
+        )
+        return fix
 
     if any(signal in haystack for signal in ["iothub", "event hub", "eventhub", "iot ingress"]):
-        return {
-            "fix_type": "restart_function_app",
-            "action_label": "Restart Function App",
-            "component": "IoT Hub ingestion pipeline",
-            "component_group": "iothub",
-            "resource_name": IOTHUB_NAME or "IoT Hub",
-            "resource_kind": "iothub",
-            "resource_id": IOTHUB_NAME,
-            "is_available": bool(FUNCTION_APP_NAME and ALLOW_FUNCTIONAPP_RESTART),
-            "risk": "medium",
-            "reason": "The issue points to IoT ingestion or Event Hub forwarding, so restarting the Function App is the safest bounded recovery step.",
-            "resources": [
-                {
-                    "name": FUNCTION_APP_NAME or "Function App",
-                    "kind": "functionapp",
-                    "id": FUNCTION_APP_NAME,
-                },
+        fix = build_fix_metadata(
+            "restart_function_app",
+            reason="The issue points to IoT ingestion or Event Hub forwarding, so restarting the Function App is the safest bounded recovery step.",
+        )
+        fix["component"] = "IoT Hub ingestion pipeline"
+        fix["component_group"] = "iothub"
+        fix["resource_name"] = IOTHUB_NAME or "IoT Hub"
+        fix["resource_kind"] = "iothub"
+        fix["resource_id"] = IOTHUB_NAME
+        fix["resources"] = dedupe_resources(
+            fix["resources"]
+            + [
                 {
                     "name": IOTHUB_NAME or "IoT Hub",
                     "kind": "iothub",
                     "id": IOTHUB_NAME,
-                },
-            ],
-        }
+                }
+            ]
+        )
+        return fix
 
     if any(signal in haystack for signal in ["functionapplogs", "function host", "azure functions"]):
-        return {
-            "fix_type": "restart_function_app",
-            "action_label": "Restart Function App",
-            "component": "Azure Function App",
-            "component_group": "functionapp",
-            "resource_name": FUNCTION_APP_NAME or "Function App",
-            "resource_kind": "functionapp",
-            "resource_id": FUNCTION_APP_NAME,
-            "is_available": bool(FUNCTION_APP_NAME and ALLOW_FUNCTIONAPP_RESTART),
-            "risk": "medium",
-            "reason": "The failure points to the event-driven pipeline, so restarting the Function App is the least disruptive recovery step.",
-            "resources": [
-                {
-                    "name": FUNCTION_APP_NAME or "Function App",
-                    "kind": "functionapp",
-                    "id": FUNCTION_APP_NAME,
-                }
-            ],
-        }
+        return build_fix_metadata(
+            "restart_function_app",
+            reason="The failure points to the event-driven pipeline, so restarting the Function App is the least disruptive recovery step.",
+        )
 
     if any(signal in haystack for signal in ["appexceptions", "apptraces", "uvicorn", "fastapi", "internal server error"]):
-        return {
-            "fix_type": "restart_webapp",
-            "action_label": "Restart Web App",
-            "component": "Azure App Service Web App",
-            "component_group": "webapp",
-            "resource_name": WEBAPP_NAME or "Web App",
-            "resource_kind": "webapp",
-            "resource_id": WEBAPP_NAME,
-            "is_available": bool(WEBAPP_NAME and ALLOW_WEBAPP_RESTART),
-            "risk": "medium",
-            "reason": "The failures appear to come from the web runtime, so restarting the web app is the safest operational reset.",
-            "resources": [
-                {
-                    "name": WEBAPP_NAME or "Web App",
-                    "kind": "webapp",
-                    "id": WEBAPP_NAME,
-                }
-            ],
-        }
+        return build_fix_metadata(
+            "restart_webapp",
+            reason="The failures appear to come from the web runtime, so restarting the web app is the safest operational reset.",
+        )
 
-    return {
-        "fix_type": "manual_investigation",
-        "action_label": "Manual investigation",
-        "component": "Unknown component",
-        "component_group": "unknown",
-        "resource_name": resource_name_from_id(""),
-        "resource_kind": "unknown",
-        "resource_id": "",
-        "is_available": False,
-        "risk": "unknown",
-        "reason": "No safe automated fix is available for this error signature yet.",
-        "resources": [],
-    }
+    return build_fix_metadata("manual_investigation")
 
 
 def describe_issue_title(source_table: str, error_type: str, message: str, fix: dict[str, Any]) -> str:
@@ -788,23 +1109,47 @@ def load_recent_error_operations(minutes: int = 60, limit: int = 12) -> list[dic
     query = """
 {union_query}
 | summarize Count=count(), FirstSeen=min(TimeGenerated), LastSeen=max(TimeGenerated), ExampleMessage=any(Message), ExampleResourceId=any(ResourceId), ExampleOperationId=any(OperationId) by SourceTable, ErrorType, ErrorKey
+| join kind=leftouter (
+    {union_query}
+    | summarize ExampleDetails=any(Details) by SourceTable, ErrorType, ErrorKey
+) on SourceTable, ErrorType, ErrorKey
 | sort by Count desc, LastSeen desc
 | take {limit}
 """.format(union_query=build_error_union_query(minutes), limit=max(1, min(limit, 50)))
 
     rows = query_log_analytics(workspace["workspace_id"], query)
+    ai_analysis_by_id: dict[str, dict[str, Any]] = {}
+    if rows and is_ai_error_analysis_configured():
+        try:
+            ai_analysis_by_id = analyze_error_rows_with_ai(rows, minutes)
+        except Exception as exc:
+            logger.warning("Azure OpenAI error analysis failed, falling back to rules: %s", exc)
+            record_exception_to_telemetry(exc, action="ai_error_analysis")
+
     items = []
     for index, row in enumerate(rows, start=1):
+        issue_id = f"err-{index}"
         source_table = str(row.get("SourceTable", ""))
         error_type = str(row.get("ErrorType", ""))
         message = str(row.get("ExampleMessage", ""))
         count = int(row.get("Count", 0) or 0)
-        fix = classify_error_fix(source_table, error_type, message)
-        title = describe_issue_title(source_table, error_type, message, fix)
-        summary = describe_issue_summary(source_table, error_type, message, fix)
+        fallback_fix = classify_error_fix(source_table, error_type, message)
+        analysis = ai_analysis_by_id.get(issue_id, fallback_issue_analysis(row, fallback_fix))
+        recommended_fix_type = sanitize_text(analysis.get("recommended_fix_type")) or fallback_fix["fix_type"]
+        fix = build_fix_metadata(
+            recommended_fix_type,
+            reason=sanitize_text(analysis.get("why_it_occurred")) or fallback_fix["reason"],
+            risk="medium",
+        )
+
+        title = sanitize_text(analysis.get("title")) or describe_issue_title(source_table, error_type, message, fix)
+        summary = sanitize_text(analysis.get("summary")) or describe_issue_summary(source_table, error_type, message, fix)
         example_resource_id = str(row.get("ExampleResourceId", "") or "")
-        affected_resources = [resource for resource in fix.get("resources", []) if resource.get("name")]
-        if example_resource_id and example_resource_id != fix["resource_id"]:
+        ai_resources = analysis.get("affected_resources", [])
+        affected_resources = [resource for resource in fix.get("resources", []) if resource.get("name")] + (
+            ai_resources if isinstance(ai_resources, list) else []
+        )
+        if example_resource_id and all((resource.get("id") or "") != example_resource_id for resource in affected_resources):
             affected_resources.append(
                 {
                     "name": resource_name_from_id(example_resource_id),
@@ -812,11 +1157,22 @@ def load_recent_error_operations(minutes: int = 60, limit: int = 12) -> list[dic
                     "id": example_resource_id,
                 }
             )
+        affected_resources = dedupe_resources(affected_resources)
 
-        severity = infer_error_severity(source_table, message, count)
+        severity = sanitize_text(analysis.get("severity_label")).lower() or infer_error_severity(source_table, message, count)
+        if severity not in {"critical", "high", "medium", "low"}:
+            severity = infer_error_severity(source_table, message, count)
+        location = analysis.get("where_it_occurred", {}) if isinstance(analysis.get("where_it_occurred"), dict) else {}
+        file_path = normalize_repo_path(str(location.get("file_path", "") or ""))
+        line_number = sanitize_text(location.get("line_number", ""))
+        if not file_path or not line_number:
+            fallback_file, fallback_line = extract_code_location(str(row.get("ExampleDetails", "")))
+            file_path = file_path or fallback_file
+            line_number = line_number or fallback_line
+
         items.append(
             {
-                "id": f"err-{index}",
+                "id": issue_id,
                 "source_table": source_table,
                 "error_type": error_type or "Unknown",
                 "error_key": str(row.get("ErrorKey", "")),
@@ -824,18 +1180,38 @@ def load_recent_error_operations(minutes: int = 60, limit: int = 12) -> list[dic
                 "first_seen": row.get("FirstSeen", ""),
                 "last_seen": row.get("LastSeen", ""),
                 "example_message": message,
+                "example_details": str(row.get("ExampleDetails", "") or ""),
                 "title": title,
                 "summary": summary,
                 "role": classify_issue_role(message),
                 "operation_id": row.get("ExampleOperationId", ""),
                 "severity": severity,
+                "severity_score": parse_int(
+                    analysis.get("severity_score", {"critical": 9, "high": 8, "medium": 5, "low": 3}.get(severity, 5)),
+                    {"critical": 9, "high": 8, "medium": 5, "low": 3}.get(severity, 5),
+                ),
                 "severity_rank": severity_rank(severity),
+                "why_it_occurred": sanitize_text(analysis.get("why_it_occurred")) or fix["reason"],
+                "where_it_occurred": {
+                    "component": sanitize_text(location.get("component")) or fix["component"],
+                    "file_path": file_path,
+                    "line_number": line_number,
+                    "resource": sanitize_text(location.get("resource")) or fix["resource_name"],
+                },
                 "fix": fix,
                 "affected_resources": affected_resources,
+                "analysis_source": sanitize_text(analysis.get("source")) or ("azure_openai" if issue_id in ai_analysis_by_id else "fallback_rules"),
             }
         )
 
-    items.sort(key=lambda item: (item["severity_rank"], 0 if item["role"] == "root" else 1, -item["count"]))
+    items.sort(
+        key=lambda item: (
+            item["severity_rank"],
+            -int(item.get("severity_score", 0)),
+            0 if item["role"] == "root" else 1,
+            -item["count"],
+        )
+    )
     return items
 
 
@@ -1602,6 +1978,7 @@ def load_error_operations_context(request: Request, msg: str = "", error: str = 
             "issue_overview": issue_overview,
             "minutes": minutes,
             "error_ops_configured": is_error_operations_configured(),
+            "ai_error_analysis_configured": is_ai_error_analysis_configured(),
             "allow_webapp_restart": ALLOW_WEBAPP_RESTART,
             "allow_functionapp_restart": ALLOW_FUNCTIONAPP_RESTART,
             "allow_postgres_restart": ALLOW_POSTGRES_RESTART,
@@ -2193,10 +2570,8 @@ def admin_error_apply_fix(
     if not require_admin_session(request):
         return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
 
-    fix = classify_error_fix(source_table, error_type, example_message)
-    if fix["fix_type"] != fix_type:
-        message = "The selected fix no longer matches the latest recommendation. Refresh and review before applying."
-        return RedirectResponse(f"/admin/errors?error={urllib_parse.quote_plus(message)}", status_code=303)
+    del source_table, error_type, example_message
+    fix = build_fix_metadata(fix_type)
 
     if not fix["is_available"]:
         message = f"{fix['action_label']} is not enabled for this environment."

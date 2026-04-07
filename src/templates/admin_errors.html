@@ -46,8 +46,8 @@
           <button class="btn compact-btn" type="submit">Scan errors</button>
         </form>
         <p class="note-copy">
-          This page reads grouped recent failures from App Insights and Log Analytics, estimates severity, and suggests
-          the safest available operational fix.
+          This page reads grouped recent failures from App Insights and Log Analytics, sends them to Azure OpenAI for
+          diagnosis, and shows a suggested fix before any action is taken.
         </p>
         {% else %}
         <p>
@@ -82,6 +82,10 @@
           <span class="stat-label">Database fixes</span>
           <strong class="stat-value">{{ "On" if allow_postgres_restart else "Off" }}</strong>
         </article>
+        <article class="stat-card">
+          <span class="stat-label">AI diagnosis</span>
+          <strong class="stat-value">{{ "On" if ai_error_analysis_configured else "Off" }}</strong>
+        </article>
       </section>
 
       {% if issues %}
@@ -105,7 +109,7 @@
             </div>
             <div class="issue-summary-right">
               <span class="severity-pill severity-{{ issue.severity }}">{{ issue.severity|upper }}</span>
-              <span class="issue-action-label">{{ issue.fix.action_label }}</span>
+              <span class="issue-action-label">Score {{ issue.severity_score }}/10</span>
             </div>
           </summary>
 
@@ -123,14 +127,36 @@
               <strong>{{ issue.last_seen or "-" }}</strong>
             </div>
             <div>
-              <span class="meta-label">Risk</span>
-              <strong>{{ issue.fix.risk|title }}</strong>
+              <span class="meta-label">Recommended fix</span>
+              <strong>{{ issue.fix.action_label }}</strong>
             </div>
           </div>
 
           <section class="impact-block">
-            <h3>What this means</h3>
+            <h3>What error is this?</h3>
             <p class="issue-summary">{{ issue.summary }}</p>
+          </section>
+
+          <section class="impact-block">
+            <h3>Where it occurred</h3>
+            <p>
+              <strong>{{ issue.where_it_occurred.component }}</strong>
+              {% if issue.where_it_occurred.resource %}
+              <span class="chip chip-muted">{{ issue.where_it_occurred.resource }}</span>
+              {% endif %}
+            </p>
+            {% if issue.where_it_occurred.file_path and issue.where_it_occurred.line_number %}
+            <p class="raw-message">
+              <strong>Code location:</strong> <code>{{ issue.where_it_occurred.file_path }}:{{ issue.where_it_occurred.line_number }}</code>
+            </p>
+            {% else %}
+            <p class="raw-message">No exact code line was present in telemetry for this issue.</p>
+            {% endif %}
+          </section>
+
+          <section class="impact-block">
+            <h3>Why it occurred</h3>
+            <p class="issue-summary">{{ issue.why_it_occurred }}</p>
           </section>
 
           <section class="impact-block">
@@ -153,6 +179,9 @@
             <p>Target component: <strong>{{ issue.fix.component }}</strong></p>
             {% if issue.example_message %}
             <p class="raw-message"><strong>Telemetry sample:</strong> {{ issue.example_message }}</p>
+            {% endif %}
+            {% if issue.example_details %}
+            <p class="raw-message"><strong>Telemetry details:</strong> {{ issue.example_details }}</p>
             {% endif %}
           </section>
 

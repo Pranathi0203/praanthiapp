@@ -30,6 +30,11 @@ locals {
     0,
     60
   )
+  azure_openai_name = substr(
+    "${substr(local.base_name, 0, 18)}-${var.env_name}-aoai-${random_integer.suffix.result}",
+    0,
+    64
+  )
   redis_name = substr(
     "${substr(local.base_name, 0, 18)}-${var.env_name}-redis-${random_integer.suffix.result}",
     0,
@@ -66,10 +71,11 @@ locals {
     0,
     24
   )
-  vnet_name       = substr("${var.webapp_name}-${var.env_name}-vnet", 0, 64)
-  app_subnet_name = "appsvc-integration"
-  app_nsg_name    = substr("${var.webapp_name}-${var.env_name}-app-nsg", 0, 80)
-  allow_rule_name = "AllowCurrentClientIp"
+  vnet_name                     = substr("${var.webapp_name}-${var.env_name}-vnet", 0, 64)
+  app_subnet_name               = "appsvc-integration"
+  app_nsg_name                  = substr("${var.webapp_name}-${var.env_name}-app-nsg", 0, 80)
+  allow_rule_name               = "AllowCurrentClientIp"
+  azure_openai_custom_subdomain = var.azure_openai_custom_subdomain != "" ? var.azure_openai_custom_subdomain : local.azure_openai_name
   base_app_settings = {
     "WEBSITES_ENABLE_APP_SERVICE_STORAGE" = "false"
     "PORT"                                = tostring(var.container_port)
@@ -245,6 +251,33 @@ resource "azurerm_application_insights" "observability" {
   resource_group_name = data.azurerm_resource_group.rg.name
   application_type    = "web"
   workspace_id        = azurerm_log_analytics_workspace.observability.id
+}
+
+resource "azurerm_cognitive_account" "openai" {
+  name                          = local.azure_openai_name
+  location                      = data.azurerm_resource_group.rg.location
+  resource_group_name           = data.azurerm_resource_group.rg.name
+  kind                          = "OpenAI"
+  sku_name                      = var.azure_openai_sku_name
+  custom_subdomain_name         = local.azure_openai_custom_subdomain
+  public_network_access_enabled = var.azure_openai_public_network_access_enabled
+}
+
+resource "azurerm_cognitive_deployment" "openai" {
+  count                = var.azure_openai_deployment_name != "" && var.azure_openai_model_name != "" && var.azure_openai_model_version != "" ? 1 : 0
+  name                 = var.azure_openai_deployment_name
+  cognitive_account_id = azurerm_cognitive_account.openai.id
+
+  model {
+    format  = "OpenAI"
+    name    = var.azure_openai_model_name
+    version = var.azure_openai_model_version
+  }
+
+  sku {
+    name     = var.azure_openai_deployment_sku_name
+    capacity = var.azure_openai_deployment_capacity
+  }
 }
 
 resource "azurerm_redis_cache" "app" {
@@ -1104,6 +1137,13 @@ resource "azurerm_key_vault_secret" "iothub_eventhub_connection_string" {
 resource "azurerm_key_vault_secret" "application_insights_connection_string" {
   name         = "applicationinsights-connection-string"
   value        = azurerm_application_insights.observability.connection_string
+  key_vault_id = azurerm_key_vault.app.id
+  depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
+}
+
+resource "azurerm_key_vault_secret" "azure_openai_api_key" {
+  name         = "azure-openai-api-key"
+  value        = azurerm_cognitive_account.openai.primary_access_key
   key_vault_id = azurerm_key_vault.app.id
   depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
 }

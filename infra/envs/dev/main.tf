@@ -18,23 +18,31 @@ module "app" {
   image_name = var.image_name
   image_tag  = var.image_tag
 
-  container_port                         = var.container_port
-  allowed_client_cidr                    = var.allowed_client_cidr
-  contoso_device_connection_string       = var.contoso_device_connection_string
-  litware_device_connection_string       = var.litware_device_connection_string
-  iothub_eventhub_connection_string      = var.iothub_eventhub_connection_string
-  application_insights_connection_string = var.application_insights_connection_string
-  dd_service                             = var.dd_service
-  dd_env                                 = var.dd_env
-  dd_version                             = var.dd_version
-  dd_trace_enabled                       = var.dd_trace_enabled
-  dd_logs_injection                      = var.dd_logs_injection
-  dd_agent_host                          = var.dd_agent_host
-  dd_trace_agent_url                     = var.dd_trace_agent_url
-  github_dashboard_token                 = var.github_dashboard_token
-  alert_email                            = var.alert_email
-  pg_alert_cpu_threshold                 = var.pg_alert_cpu_threshold
-  iothub_data_contributor_principal_id   = var.iothub_data_contributor_principal_id
+  container_port                             = var.container_port
+  allowed_client_cidr                        = var.allowed_client_cidr
+  contoso_device_connection_string           = var.contoso_device_connection_string
+  litware_device_connection_string           = var.litware_device_connection_string
+  iothub_eventhub_connection_string          = var.iothub_eventhub_connection_string
+  application_insights_connection_string     = var.application_insights_connection_string
+  azure_openai_sku_name                      = var.azure_openai_sku_name
+  azure_openai_custom_subdomain              = var.azure_openai_custom_subdomain
+  azure_openai_public_network_access_enabled = var.azure_openai_public_network_access_enabled
+  azure_openai_deployment_name               = var.azure_openai_deployment_name
+  azure_openai_model_name                    = var.azure_openai_model_name
+  azure_openai_model_version                 = var.azure_openai_model_version
+  azure_openai_deployment_sku_name           = var.azure_openai_deployment_sku_name
+  azure_openai_deployment_capacity           = var.azure_openai_deployment_capacity
+  dd_service                                 = var.dd_service
+  dd_env                                     = var.dd_env
+  dd_version                                 = var.dd_version
+  dd_trace_enabled                           = var.dd_trace_enabled
+  dd_logs_injection                          = var.dd_logs_injection
+  dd_agent_host                              = var.dd_agent_host
+  dd_trace_agent_url                         = var.dd_trace_agent_url
+  github_dashboard_token                     = var.github_dashboard_token
+  alert_email                                = var.alert_email
+  pg_alert_cpu_threshold                     = var.pg_alert_cpu_threshold
+  iothub_data_contributor_principal_id       = var.iothub_data_contributor_principal_id
 }
 
 output "webapp_url" { value = module.app.webapp_url }
@@ -54,3 +62,7 @@ output "application_insights_connection_string" {
   value     = module.app.application_insights_connection_string
   sensitive = true
 }
+output "azure_openai_name" { value = module.app.azure_openai_name }
+output "azure_openai_endpoint" { value = module.app.azure_openai_endpoint }
+output "azure_openai_deployment_name" { value = module.app.azure_openai_deployment_name }
+output "azure_openai_api_key_secret_name" { value = module.app.azure_openai_api_key_secret_name }

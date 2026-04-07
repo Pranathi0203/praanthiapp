@@ -588,31 +588,30 @@ def apply_fix_operation(fix_type: str, context: Dict[str, Any]) -> Dict[str, Any
 def build_union_query(minutes: int) -> str:
     window = max(1, minutes)
     return """
-let windowStart = ago({window}m);
 union isfuzzy=true
 (
     AppExceptions
-    | where TimeGenerated >= windowStart
-    | extend Details=tostring(column_ifexists("Details", "")), ParsedDetails=tostring(parse_json(column_ifexists("Details", "{}"))[0].rawStack)
+    | where TimeGenerated >= ago({window}m)
+    | extend Details=tostring(column_ifexists("Details", "")), ParsedDetails=tostring(parse_json(column_ifexists("Details", "{{}}"))[0].rawStack)
     | project TimeGenerated, SourceTable="AppExceptions", Severity="Error", ErrorType=coalesce(Type, InnermostType, ProblemId), ErrorKey=coalesce(ProblemId, Type, InnermostType, OuterMessage), Message=coalesce(OuterMessage, InnermostMessage, Message), Details=coalesce(ParsedDetails, Details), OperationId=OperationId, ResourceId=_ResourceId
 ),
 (
     AppTraces
-    | where TimeGenerated >= windowStart
+    | where TimeGenerated >= ago({window}m)
     | where SeverityLevel >= 3 or Message has_any ("error", "exception", "failed", "timeout", "deadlock", "forbidden", "unauthorized")
     | extend Details=tostring(column_ifexists("customDimensions", dynamic({{}})).detail)
     | project TimeGenerated, SourceTable="AppTraces", Severity=tostring(SeverityLevel), ErrorType=tostring(column_ifexists("customDimensions", dynamic({{}})).event), ErrorKey=coalesce(tostring(column_ifexists("customDimensions", dynamic({{}})).event), Message), Message=Message, Details=Details, OperationId=OperationId, ResourceId=_ResourceId
 ),
 (
     FunctionAppLogs
-    | where TimeGenerated >= windowStart
+    | where TimeGenerated >= ago({window}m)
     | where tostring(column_ifexists("Level", "")) =~ "Error" or Message has_any ("error", "exception", "failed", "timeout", "deadlock")
     | extend Details=tostring(column_ifexists("ExceptionDetails", ""))
     | project TimeGenerated, SourceTable="FunctionAppLogs", Severity=tostring(column_ifexists("Level", "")), ErrorType=tostring(column_ifexists("Level", "")), ErrorKey=coalesce(Message, tostring(column_ifexists("Level", ""))), Message=Message, Details=Details, OperationId=tostring(column_ifexists("OperationId", "")), ResourceId=_ResourceId
 ),
 (
     AzureDiagnostics
-    | where TimeGenerated >= windowStart
+    | where TimeGenerated >= ago({window}m)
     | where tostring(column_ifexists("Message", "")) has_any ("error", "exception", "failed", "timeout", "deadlock", "unauthorized", "forbidden")
         or tostring(column_ifexists("Level", "")) =~ "Error"
         or tostring(column_ifexists("status_s", "")) =~ "Failed"
@@ -621,7 +620,7 @@ union isfuzzy=true
 ),
 (
     PGSQLServerLogs
-    | where TimeGenerated >= windowStart
+    | where TimeGenerated >= ago({window}m)
     | where Message has_any ("error", "exception", "failed", "timeout", "deadlock", "too many connections", "lock wait")
     | project TimeGenerated, SourceTable="PGSQLServerLogs", Severity="Error", ErrorType="PGSQLServerLogs", ErrorKey=Message, Message=Message, Details="", OperationId="", ResourceId=_ResourceId
 )

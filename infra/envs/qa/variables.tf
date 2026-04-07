@@ -63,6 +63,38 @@ variable "application_insights_connection_string" {
   default   = ""
   sensitive = true
 }
+variable "azure_openai_sku_name" {
+  type    = string
+  default = "S0"
+}
+variable "azure_openai_custom_subdomain" {
+  type    = string
+  default = ""
+}
+variable "azure_openai_public_network_access_enabled" {
+  type    = bool
+  default = true
+}
+variable "azure_openai_deployment_name" {
+  type    = string
+  default = "gpt-4o-mini"
+}
+variable "azure_openai_model_name" {
+  type    = string
+  default = "gpt-4o-mini"
+}
+variable "azure_openai_model_version" {
+  type    = string
+  default = "2024-07-18"
+}
+variable "azure_openai_deployment_sku_name" {
+  type    = string
+  default = "Standard"
+}
+variable "azure_openai_deployment_capacity" {
+  type    = number
+  default = 1
+}
 
 variable "dd_service" {
   type    = string

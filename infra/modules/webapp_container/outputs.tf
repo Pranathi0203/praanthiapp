@@ -58,3 +58,19 @@ output "application_insights_connection_string" {
   value     = azurerm_application_insights.observability.connection_string
   sensitive = true
 }
+
+output "azure_openai_name" {
+  value = azurerm_cognitive_account.openai.name
+}
+
+output "azure_openai_endpoint" {
+  value = azurerm_cognitive_account.openai.endpoint
+}
+
+output "azure_openai_deployment_name" {
+  value = try(azurerm_cognitive_deployment.openai[0].name, "")
+}
+
+output "azure_openai_api_key_secret_name" {
+  value = azurerm_key_vault_secret.azure_openai_api_key.name
+}
