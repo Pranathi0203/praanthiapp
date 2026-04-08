@@ -30,11 +30,8 @@ locals {
     0,
     60
   )
-  azure_openai_name = substr(
-    "${substr(local.base_name, 0, 18)}-${var.env_name}-aoai-${random_integer.suffix.result}",
-    0,
-    64
-  )
+  azure_openai_name     = substr("${substr(local.base_name, 0, 18)}-${var.env_name}-aoai-${random_integer.suffix.result}", 0, 64)
+  azure_openai_location = var.azure_openai_location != "" ? var.azure_openai_location : data.azurerm_resource_group.rg.location
   redis_name = substr(
     "${substr(local.base_name, 0, 18)}-${var.env_name}-redis-${random_integer.suffix.result}",
     0,
@@ -102,6 +99,10 @@ locals {
     "REDIS_URL"                           = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.redis_url.versionless_id})"
     "APIM_LOGIN_PATH"                     = "/auth/login"
     "APIM_SIGNUP_PATH"                    = "/auth/signup"
+    "AZURE_OPENAI_ENDPOINT"               = azurerm_cognitive_account.openai.endpoint
+    "AZURE_OPENAI_DEPLOYMENT"             = var.azure_openai_deployment_name
+    "AZURE_OPENAI_API_KEY"                = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.azure_openai_api_key.versionless_id})"
+    "ERROR_ANALYSIS_USE_AZURE_OPENAI"     = var.azure_openai_deployment_name != "" ? "true" : "false"
   }
   optional_app_settings = var.contoso_device_connection_string != "" ? {
     "CONTOSO_DEVICE_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_device_connection_string[0].versionless_id})"
@@ -255,7 +256,7 @@ resource "azurerm_application_insights" "observability" {
 
 resource "azurerm_cognitive_account" "openai" {
   name                          = local.azure_openai_name
-  location                      = data.azurerm_resource_group.rg.location
+  location                      = local.azure_openai_location
   resource_group_name           = data.azurerm_resource_group.rg.name
   kind                          = "OpenAI"
   sku_name                      = var.azure_openai_sku_name

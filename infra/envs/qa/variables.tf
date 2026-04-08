@@ -75,17 +75,21 @@ variable "azure_openai_public_network_access_enabled" {
   type    = bool
   default = true
 }
+variable "azure_openai_location" {
+  type    = string
+  default = "eastus2"
+}
 variable "azure_openai_deployment_name" {
   type    = string
   default = "gpt-4o-mini"
 }
 variable "azure_openai_model_name" {
   type    = string
-  default = "gpt-4o-mini"
+  default = "gpt-4o"
 }
 variable "azure_openai_model_version" {
   type    = string
-  default = "2025-01-01-preview"
+  default = "2024-11-20"
 }
 variable "azure_openai_deployment_sku_name" {
   type    = string

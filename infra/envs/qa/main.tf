@@ -36,6 +36,7 @@ module "app" {
   litware_device_connection_string           = var.litware_device_connection_string
   iothub_eventhub_connection_string          = var.iothub_eventhub_connection_string
   application_insights_connection_string     = var.application_insights_connection_string
+  azure_openai_location                      = var.azure_openai_location
   azure_openai_sku_name                      = var.azure_openai_sku_name
   azure_openai_custom_subdomain              = var.azure_openai_custom_subdomain
   azure_openai_public_network_access_enabled = var.azure_openai_public_network_access_enabled

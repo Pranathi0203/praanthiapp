@@ -60,19 +60,25 @@ variable "azure_openai_public_network_access_enabled" {
   default = true
 }
 
+variable "azure_openai_location" {
+  type        = string
+  default     = ""
+  description = "Region for the Azure OpenAI account. Defaults to the resource group location when empty. Set to a region with available quota (e.g. eastus2)."
+}
+
 variable "azure_openai_deployment_name" {
   type    = string
-  default = "gpt-4-1-mini"
+  default = "gpt-4o-mini"
 }
 
 variable "azure_openai_model_name" {
   type    = string
-  default = "gpt-4.1-mini"
+  default = "gpt-4o"
 }
 
 variable "azure_openai_model_version" {
   type    = string
-  default = "2025-04-14"
+  default = "2024-11-20"
 }
 
 variable "azure_openai_deployment_sku_name" {
