@@ -1532,3 +1532,120 @@ resource "azurerm_api_management_api_operation" "signup" {
     status_code = 200
   }
 }
+
+# ─── Security Policy Definitions & Assignments ─────────────────────────────
+# Simulates Microsoft Defender for Cloud — each policy audits a specific
+# resource configuration. Non-compliant resources surface in /admin/policies.
+
+locals {
+  security_policies = {
+    "pranathi-appservice-https-only" = {
+      display_name = "App Service should use HTTPS only"
+      description  = "Ensures HTTPS-only traffic is enforced on App Service web apps."
+      severity     = "high"
+      rule = jsonencode({
+        if = { allOf = [
+          { field = "type", equals = "Microsoft.Web/sites" },
+          { field = "Microsoft.Web/sites/httpsOnly", notEquals = "true" }
+        ] }
+        then = { effect = "audit" }
+      })
+    }
+    "pranathi-appservice-min-tls" = {
+      display_name = "App Service should use minimum TLS 1.2"
+      description  = "Ensures App Service enforces a minimum TLS version of 1.2."
+      severity     = "medium"
+      rule = jsonencode({
+        if = { allOf = [
+          { field = "type", equals = "Microsoft.Web/sites/config" },
+          { field = "Microsoft.Web/sites/config/minTlsVersion", notEquals = "1.2" }
+        ] }
+        then = { effect = "audit" }
+      })
+    }
+    "pranathi-keyvault-purge-protection" = {
+      display_name = "Key Vault should have purge protection enabled"
+      description  = "Ensures Key Vault purge protection is enabled to prevent permanent deletion."
+      severity     = "high"
+      rule = jsonencode({
+        if = { allOf = [
+          { field = "type", equals = "Microsoft.KeyVault/vaults" },
+          { field = "Microsoft.KeyVault/vaults/enablePurgeProtection", notEquals = "true" }
+        ] }
+        then = { effect = "audit" }
+      })
+    }
+    "pranathi-keyvault-soft-delete" = {
+      display_name = "Key Vault should have soft delete enabled"
+      description  = "Ensures Key Vault soft delete is enabled for recovery protection."
+      severity     = "high"
+      rule = jsonencode({
+        if = { allOf = [
+          { field = "type", equals = "Microsoft.KeyVault/vaults" },
+          { field = "Microsoft.KeyVault/vaults/enableSoftDelete", notEquals = "true" }
+        ] }
+        then = { effect = "audit" }
+      })
+    }
+    "pranathi-storage-https-only" = {
+      display_name = "Storage accounts should use HTTPS only"
+      description  = "Ensures storage accounts only allow HTTPS traffic."
+      severity     = "high"
+      rule = jsonencode({
+        if = { allOf = [
+          { field = "type", equals = "Microsoft.Storage/storageAccounts" },
+          { field = "Microsoft.Storage/storageAccounts/supportsHttpsTrafficOnly", notEquals = "true" }
+        ] }
+        then = { effect = "audit" }
+      })
+    }
+    "pranathi-storage-no-public-access" = {
+      display_name = "Storage accounts should disable public blob access"
+      description  = "Ensures public blob access is disabled on storage accounts."
+      severity     = "high"
+      rule = jsonencode({
+        if = { allOf = [
+          { field = "type", equals = "Microsoft.Storage/storageAccounts" },
+          { field = "Microsoft.Storage/storageAccounts/allowBlobPublicAccess", notEquals = "false" }
+        ] }
+        then = { effect = "audit" }
+      })
+    }
+    "pranathi-acr-admin-disabled" = {
+      display_name = "Container Registry admin user should be disabled"
+      description  = "Ensures the admin user is disabled on Azure Container Registry."
+      severity     = "medium"
+      rule = jsonencode({
+        if = { allOf = [
+          { field = "type", equals = "Microsoft.ContainerRegistry/registries" },
+          { field = "Microsoft.ContainerRegistry/registries/adminUserEnabled", notEquals = "false" }
+        ] }
+        then = { effect = "audit" }
+      })
+    }
+  }
+}
+
+resource "azurerm_policy_definition" "security" {
+  for_each     = local.security_policies
+  name         = each.key
+  policy_type  = "Custom"
+  mode         = "All"
+  display_name = each.value.display_name
+  description  = each.value.description
+
+  metadata = jsonencode({
+    severity = each.value.severity
+    category = "PranathiApp"
+  })
+
+  policy_rule = each.value.rule
+}
+
+resource "azurerm_resource_group_policy_assignment" "security" {
+  for_each             = local.security_policies
+  name                 = "${each.key}-assignment"
+  display_name         = each.value.display_name
+  resource_group_id    = data.azurerm_resource_group.rg.id
+  policy_definition_id = azurerm_policy_definition.security[each.key].id
+}
