@@ -2566,6 +2566,214 @@ def admin_database_dashboard(request: Request, msg: str = "", error: str = ""):
     return load_database_dashboard_context(request, msg=msg, error=error)
 
 
+# ─── Policy Compliance ──────────────────────────────────────────────────────
+
+POLICY_REMEDIATION_MAP: dict[str, dict[str, Any]] = {
+    "pranathi-appservice-https-only": {
+        "label": "Enable HTTPS-only on App Service",
+        "risk": "low",
+        "arm_patch": {
+            "resource_type": "Microsoft.Web/sites",
+            "api_version": "2022-03-01",
+            "body": {"properties": {"httpsOnly": True}},
+        },
+    },
+    "pranathi-appservice-min-tls": {
+        "label": "Set minimum TLS 1.2 on App Service",
+        "risk": "low",
+        "arm_patch": {
+            "resource_type": "Microsoft.Web/sites/config",
+            "api_version": "2022-03-01",
+            "body": {"properties": {"minTlsVersion": "1.2"}},
+        },
+    },
+    "pranathi-keyvault-purge-protection": {
+        "label": "Enable purge protection on Key Vault",
+        "risk": "low",
+        "arm_patch": {
+            "resource_type": "Microsoft.KeyVault/vaults",
+            "api_version": "2022-07-01",
+            "body": {"properties": {"enablePurgeProtection": True}},
+        },
+    },
+    "pranathi-keyvault-soft-delete": {
+        "label": "Enable soft delete on Key Vault",
+        "risk": "low",
+        "arm_patch": {
+            "resource_type": "Microsoft.KeyVault/vaults",
+            "api_version": "2022-07-01",
+            "body": {"properties": {"enableSoftDelete": True}},
+        },
+    },
+    "pranathi-storage-https-only": {
+        "label": "Enforce HTTPS-only on Storage Account",
+        "risk": "low",
+        "arm_patch": {
+            "resource_type": "Microsoft.Storage/storageAccounts",
+            "api_version": "2022-09-01",
+            "body": {"properties": {"supportsHttpsTrafficOnly": True}},
+        },
+    },
+    "pranathi-storage-no-public-access": {
+        "label": "Disable public blob access on Storage Account",
+        "risk": "low",
+        "arm_patch": {
+            "resource_type": "Microsoft.Storage/storageAccounts",
+            "api_version": "2022-09-01",
+            "body": {"properties": {"allowBlobPublicAccess": False}},
+        },
+    },
+    "pranathi-acr-admin-disabled": {
+        "label": "Disable admin user on Container Registry",
+        "risk": "low",
+        "arm_patch": {
+            "resource_type": "Microsoft.ContainerRegistry/registries",
+            "api_version": "2023-01-01-preview",
+            "body": {"properties": {"adminUserEnabled": False}},
+        },
+    },
+}
+
+POLICY_SEVERITY_MAP = {
+    "pranathi-appservice-https-only": "high",
+    "pranathi-appservice-min-tls": "medium",
+    "pranathi-keyvault-purge-protection": "high",
+    "pranathi-keyvault-soft-delete": "high",
+    "pranathi-storage-https-only": "high",
+    "pranathi-storage-no-public-access": "high",
+    "pranathi-acr-admin-disabled": "medium",
+}
+
+
+def load_policy_compliance() -> list[dict[str, Any]]:
+    ensure_azure_cli_login()
+    raw = run_azure_cli_json([
+        "policy", "state", "list",
+        "--resource-group", AZURE_RESOURCE_GROUP,
+        "--filter", "complianceState eq 'NonCompliant'",
+        "--select", "resourceId,policyDefinitionName,policyDefinitionDisplayName,complianceState,timestamp,resourceType",
+    ])
+    if not isinstance(raw, list):
+        return []
+
+    findings = []
+    seen: set[tuple[str, str]] = set()
+    for item in raw:
+        policy_name = sanitize_text(item.get("policyDefinitionName", ""))
+        resource_id = sanitize_text(item.get("resourceId", ""))
+        key = (policy_name, resource_id)
+        if key in seen or not policy_name or not resource_id:
+            continue
+        seen.add(key)
+
+        remediation = POLICY_REMEDIATION_MAP.get(policy_name)
+        if not remediation:
+            continue
+
+        findings.append({
+            "policy_name": policy_name,
+            "display_name": sanitize_text(item.get("policyDefinitionDisplayName", policy_name)),
+            "resource_id": resource_id,
+            "resource_name": resource_name_from_id(resource_id),
+            "resource_type": sanitize_text(item.get("resourceType", "")),
+            "severity": POLICY_SEVERITY_MAP.get(policy_name, "medium"),
+            "timestamp": sanitize_text(item.get("timestamp", "")),
+            "fix_label": remediation["label"],
+            "fix_risk": remediation["risk"],
+            "arm_patch": remediation["arm_patch"],
+        })
+
+    findings.sort(key=lambda f: {"high": 0, "medium": 1, "low": 2}.get(f["severity"], 3))
+    return findings
+
+
+def apply_policy_fix(policy_name: str, resource_id: str) -> str:
+    remediation = POLICY_REMEDIATION_MAP.get(policy_name)
+    if not remediation:
+        raise RuntimeError(f"No remediation defined for policy: {policy_name}")
+
+    token = run_azure_cli_access_token("https://management.azure.com/")
+    url = f"https://management.azure.com{resource_id}?api-version={remediation['arm_patch']['api_version']}"
+    req = urllib_request.Request(
+        url,
+        data=json.dumps(remediation["arm_patch"]["body"]).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="PATCH",
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=30) as response:
+            response.read()
+    except urllib_error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"ARM remediation failed: HTTP {exc.code} {body}") from exc
+    except urllib_error.URLError as exc:
+        raise RuntimeError(f"Network error during ARM remediation: {exc.reason}") from exc
+
+    return f"{remediation['label']} applied to {resource_name_from_id(resource_id)}."
+
+
+@app.get("/admin/policies", response_class=HTMLResponse)
+def admin_policy_compliance(request: Request, msg: str = "", error: str = ""):
+    session_admin = require_admin_session(request)
+    if not session_admin:
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    findings: list[dict[str, Any]] = []
+    scan_error = error
+    if AZURE_RESOURCE_GROUP and AZURE_SUBSCRIPTION_ID:
+        try:
+            findings = load_policy_compliance()
+        except Exception as exc:
+            record_exception_to_telemetry(exc, action="load_policy_compliance")
+            scan_error = str(exc)
+
+    severity_counts = {"high": 0, "medium": 0, "low": 0}
+    for f in findings:
+        severity_counts[f["severity"]] = severity_counts.get(f["severity"], 0) + 1
+
+    return templates.TemplateResponse(
+        request,
+        "admin_policies.html",
+        {
+            "request": request,
+            "admin_email": session_admin["email"],
+            "msg": msg,
+            "error": scan_error,
+            "findings": findings,
+            "severity_counts": severity_counts,
+            "configured": bool(AZURE_RESOURCE_GROUP and AZURE_SUBSCRIPTION_ID),
+        },
+    )
+
+
+@app.post("/admin/policies/apply")
+def admin_policy_apply_fix(
+    request: Request,
+    policy_name: str = Form(...),
+    resource_id: str = Form(...),
+):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+    try:
+        result = apply_policy_fix(policy_name, resource_id)
+        log_event(logging.INFO, "policy_fix_applied", policy_name=policy_name, resource_id=resource_id)
+        return RedirectResponse(f"/admin/policies?msg={urllib_parse.quote_plus(result)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="apply_policy_fix", policy_name=policy_name)
+        return RedirectResponse(f"/admin/policies?error={urllib_parse.quote_plus(str(exc))}", status_code=303)
+
+
+@app.post("/admin/policies/deny")
+def admin_policy_deny_fix(request: Request, policy_name: str = Form(...), resource_name: str = Form("")):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+    msg = f"Fix for '{policy_name}' on {resource_name} was denied. No action taken."
+    return RedirectResponse(f"/admin/policies?msg={urllib_parse.quote_plus(msg)}", status_code=303)
+
+
 @app.post("/admin/errors/apply")
 def admin_error_apply_fix(
     request: Request,

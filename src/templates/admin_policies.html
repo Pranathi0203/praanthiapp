@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Policy Compliance</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="container container-wide">
+      <section class="hero admin-hero">
+        <div>
+          <p class="eyebrow">Admin App</p>
+          <h1>Security policy compliance</h1>
+          <p>
+            Azure resources scanned against security policies. Non-compliant findings are shown below with one-click ARM remediations.<br />
+            Signed in as <strong>{{ admin_email }}</strong>
+          </p>
+        </div>
+        <div class="hero-actions">
+          <a class="icon-btn" href="/admin/policies" title="Refresh scan" aria-label="Refresh scan">&#x21bb;</a>
+          <a class="btn secondary" href="/admin/dashboard">Back to dashboard</a>
+          <a class="btn" href="/admin/logout">Logout</a>
+        </div>
+      </section>
+
+      {% if msg %}<p class="ok banner">{{ msg }}</p>{% endif %}
+      {% if error %}<p class="error banner">{{ error }}</p>{% endif %}
+
+      {% if not configured %}
+      <section class="card">
+        <p>Set <code>AZURE_SUBSCRIPTION_ID</code> and <code>AZURE_RESOURCE_GROUP</code> to enable policy compliance scanning.</p>
+      </section>
+      {% else %}
+
+      <section class="stats-grid">
+        <article class="stat-card">
+          <span class="stat-label">Total findings</span>
+          <strong class="stat-value">{{ findings | length }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">High severity</span>
+          <strong class="stat-value severity-high">{{ severity_counts.high }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">Medium severity</span>
+          <strong class="stat-value severity-medium">{{ severity_counts.medium }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">Low severity</span>
+          <strong class="stat-value">{{ severity_counts.low }}</strong>
+        </article>
+      </section>
+
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Non-compliant resources</p>
+            <h2>{% if findings %}{{ findings | length }} finding{{ 's' if findings | length != 1 }} need attention{% else %}All policies are compliant{% endif %}</h2>
+          </div>
+        </div>
+        <p class="note-copy">
+          Policies are evaluated against resources in <strong>{{ findings[0].resource_id.split('/')[4] if findings else 'the resource group' }}</strong>.
+          Each finding represents a resource configuration that violates a security policy.
+          Fixes are applied directly via ARM PATCH — no pipeline required.
+        </p>
+      </section>
+
+      {% if findings %}
+      <div class="issues-list">
+        {% for finding in findings %}
+        <section class="card issue-card severity-border-{{ finding.severity }}">
+          <div class="issue-header">
+            <div>
+              <p class="eyebrow">{{ finding.resource_type }}</p>
+              <h2 class="issue-title">{{ finding.display_name }}</h2>
+            </div>
+            <span class="severity-badge severity-{{ finding.severity }}">
+              {{ finding.severity | upper }}
+            </span>
+          </div>
+
+          <div class="issue-meta-grid">
+            <div class="issue-meta-item">
+              <span class="meta-label">Resource</span>
+              <span class="meta-value">{{ finding.resource_name }}</span>
+            </div>
+            <div class="issue-meta-item">
+              <span class="meta-label">Policy</span>
+              <span class="meta-value">{{ finding.policy_name }}</span>
+            </div>
+            <div class="issue-meta-item">
+              <span class="meta-label">Detected</span>
+              <span class="meta-value">{{ finding.timestamp[:19].replace('T', ' ') if finding.timestamp else 'Unknown' }}</span>
+            </div>
+            <div class="issue-meta-item">
+              <span class="meta-label">Fix risk</span>
+              <span class="meta-value">{{ finding.fix_risk | upper }}</span>
+            </div>
+          </div>
+
+          <div class="issue-fix-box">
+            <p class="fix-label">Suggested fix</p>
+            <p class="fix-description">{{ finding.fix_label }}</p>
+            <p class="fix-target">Target resource: <strong>{{ finding.resource_name }}</strong></p>
+            <p class="fix-target">Resource ID: <code>{{ finding.resource_id }}</code></p>
+          </div>
+
+          <div class="issue-actions">
+            <form method="post" action="/admin/policies/apply">
+              <input type="hidden" name="policy_name" value="{{ finding.policy_name }}" />
+              <input type="hidden" name="resource_id" value="{{ finding.resource_id }}" />
+              <button class="btn" type="submit">Accept and apply fix</button>
+            </form>
+            <form method="post" action="/admin/policies/deny">
+              <input type="hidden" name="policy_name" value="{{ finding.policy_name }}" />
+              <input type="hidden" name="resource_name" value="{{ finding.resource_name }}" />
+              <button class="btn secondary" type="submit">Deny fix</button>
+            </form>
+          </div>
+        </section>
+        {% endfor %}
+      </div>
+      {% else %}
+      <section class="card">
+        <p class="ok banner">All scanned resources are compliant with the assigned policies.</p>
+      </section>
+      {% endif %}
+
+      {% endif %}
+    </main>
+  </body>
+</html>
