@@ -900,80 +900,186 @@ def fallback_issue_analysis(row: dict[str, Any], fix: dict[str, Any]) -> dict[st
     }
 
 
-def analyze_error_rows_with_ai(rows: list[dict[str, Any]], minutes: int) -> dict[str, dict[str, Any]]:
-    issue_payload = []
-    for index, row in enumerate(rows, start=1):
-        issue_payload.append(
-            {
-                "issue_id": f"err-{index}",
-                "source_table": sanitize_text(row.get("SourceTable")),
-                "error_type": sanitize_text(row.get("ErrorType")),
-                "error_key": sanitize_text(row.get("ErrorKey")),
-                "occurrences": int(row.get("Count", 0) or 0),
-                "first_seen": str(row.get("FirstSeen", "") or ""),
-                "last_seen": str(row.get("LastSeen", "") or ""),
-                "example_message": sanitize_text(row.get("ExampleMessage")),
-                "example_details": sanitize_text(row.get("ExampleDetails")),
-                "resource_id": sanitize_text(row.get("ExampleResourceId")),
-                "operation_id": sanitize_text(row.get("ExampleOperationId")),
-            }
-        )
+def build_infra_context() -> dict[str, Any]:
+    """Return a snapshot of live infrastructure state for the AI to reason about."""
+    return {
+        "subscription_id": AZURE_SUBSCRIPTION_ID,
+        "resource_group": AZURE_RESOURCE_GROUP,
+        "resources": {
+            "webapp": {"name": WEBAPP_NAME, "type": "Microsoft.Web/sites"},
+            "function_app": {"name": FUNCTION_APP_NAME, "type": "Microsoft.Web/sites"},
+            "postgres": {"name": AZURE_POSTGRES_SERVER_NAME, "type": "Microsoft.DBforPostgreSQL/flexibleServers"},
+            "iothub": {"name": IOTHUB_NAME, "type": "Microsoft.Devices/IotHubs"},
+            "servicebus": {"name": SERVICEBUS_NAMESPACE_NAME, "type": "Microsoft.ServiceBus/namespaces"},
+            "redis": {"name": "Redis Cache", "url_configured": bool(REDIS_URL)},
+            "app_insights": {"name": APPLICATION_INSIGHTS_NAME, "type": "Microsoft.Insights/components"},
+        },
+        "capabilities": {
+            "az_cli_available": True,
+            "postgres_direct_access": bool(DATABASE_URL or POSTGRES_ADMIN_URL),
+            "redis_access": bool(REDIS_URL),
+            "iot_clients_cached": list(_tenant_iot_clients.keys()),
+            "webapp_restart_enabled": ALLOW_WEBAPP_RESTART,
+            "functionapp_restart_enabled": ALLOW_FUNCTIONAPP_RESTART,
+            "postgres_restart_enabled": ALLOW_POSTGRES_RESTART,
+        },
+    }
 
-    system_prompt = (
-        "You are an expert SRE diagnosing live failures in a multi-tenant employee attendance tracking system. "
-        "\n\n"
-        "APPLICATION: A FastAPI (Python) web app on Azure App Service used by two tenants — Contoso and Litware — "
-        "to manage employee punch-in/punch-out attendance. "
-        "\n\n"
-        "PIPELINE: Employee Client → FastAPI Web App → IoT Hub (AMQP) → Event Hub → "
-        "Azure Function IoTHubIngress → Service Bus Queue → Azure Function AttendanceProcessor → PostgreSQL. "
-        "Redis caches session tokens and tenant IoT connection strings. "
-        "\n\n"
-        "KNOWN FAILURE PATTERNS:\n"
-        "- 'could not connect' / 'connection refused' / 'psycopg' errors → PostgreSQL is down or overloaded.\n"
-        "- 'Service Bus' / 'queue' / 'attendance-events' errors → Function App failed to consume the queue.\n"
-        "- 'IoT Hub' / 'Event Hub' / 'AMQP' / 'IoTHubIngress' errors → IoT ingestion pipeline is broken.\n"
-        "- 'FunctionAppLogs' errors → AttendanceProcessor or IoTHubIngress is crashing.\n"
-        "- 'AppExceptions' with HTTP 5xx / 'internal server error' → FastAPI web app runtime crash.\n"
-        "- 'unauthorized' / 'forbidden' / '401' / '403' → auth token expired or misconfigured Key Vault secret.\n"
-        "- 'AzureDiagnostics' with 'Failed' → infrastructure-level failure (scale, quota, or network).\n"
-        "\n\n"
-        "AVAILABLE AUTOMATED FIXES (use exact strings):\n"
-        "- start_postgres_server: PostgreSQL is completely stopped — start it.\n"
-        "- restart_postgres_server: PostgreSQL is running but unhealthy — restart to clear connections.\n"
-        "- restart_function_app: Function App is crashing or stuck — restart to restore pipeline processing.\n"
-        "- restart_webapp: FastAPI web app has a runtime crash — restart to restore employee access.\n"
-        "- manual_investigation: No safe automated fix — operator must investigate.\n"
-        "\n\n"
-        "RULES:\n"
-        "1. Only recommend an automated fix when the error evidence clearly points to that component.\n"
-        "2. Do not recommend restart_webapp for database or pipeline errors — those are independent.\n"
-        "3. Do not recommend manual_investigation when a clear automated fix exists.\n"
-        "4. Severity: critical = service completely down for employees; high = intermittent failures; "
-        "medium = degraded performance; low = warnings with no user impact.\n"
-        "\n\n"
-        "Return strict JSON only, no markdown: "
-        "{'issues': [{'issue_id': '...', 'title': '...', 'summary': '...', 'severity_label': '...', "
-        "'severity_score': 0, 'why_it_occurred': '...', "
-        "'where_it_occurred': {'component': '...', 'file_path': '...', 'line_number': '...', 'resource': '...'}, "
-        "'recommended_fix_type': '...', 'recommended_fix': '...', "
-        "'affected_resources': [{'name': '...', 'kind': '...', 'id': '...'}]}]}"
-    )
+
+def analyze_error_rows_with_ai(rows: list[dict[str, Any]], minutes: int) -> dict[str, dict[str, Any]]:
+    issue_payload = [
+        {
+            "issue_id": f"err-{i}",
+            "source_table": sanitize_text(row.get("SourceTable")),
+            "error_type": sanitize_text(row.get("ErrorType")),
+            "error_key": sanitize_text(row.get("ErrorKey")),
+            "occurrences": int(row.get("Count", 0) or 0),
+            "first_seen": str(row.get("FirstSeen", "") or ""),
+            "last_seen": str(row.get("LastSeen", "") or ""),
+            "example_message": sanitize_text(row.get("ExampleMessage")),
+            "example_details": sanitize_text(row.get("ExampleDetails")),
+            "resource_id": sanitize_text(row.get("ExampleResourceId")),
+        }
+        for i, row in enumerate(rows, start=1)
+    ]
+
+    system_prompt = """You are an expert SRE with full access to a live Azure environment. \
+Diagnose each error and generate the exact fix commands to resolve it.
+
+APPLICATION: Multi-tenant employee attendance tracking system.
+PIPELINE: Employee Client → FastAPI Web App (Python/Azure App Service) → IoT Hub (AMQP) \
+→ Event Hub → Azure Function IoTHubIngress → Service Bus Queue \
+→ Azure Function AttendanceProcessor → PostgreSQL (attendance records).
+Redis caches session tokens and IoT connection strings.
+
+EXECUTABLE FIX STEP TYPES — use these exactly:
+  {"type": "az_cli", "command": ["webapp", "restart", "--resource-group", "...", "--name", "..."], "description": "..."}
+  {"type": "az_cli", "command": ["functionapp", "restart", "--resource-group", "...", "--name", "..."], "description": "..."}
+  {"type": "az_cli", "command": ["postgres", "flexible-server", "start", "--resource-group", "...", "--name", "..."], "description": "..."}
+  {"type": "az_cli", "command": ["postgres", "flexible-server", "restart", "--resource-group", "...", "--name", "..."], "description": "..."}
+  {"type": "sql", "db": "admin", "query": "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state='idle' AND query_start < now() - interval '5 minutes'", "description": "..."}
+  {"type": "sql", "db": "admin", "query": "VACUUM ANALYZE attendance_events", "description": "..."}
+  {"type": "arm_patch", "resource_id": "/subscriptions/.../providers/...", "api_version": "...", "body": {...}, "description": "..."}
+  {"type": "redis_flush", "description": "Flush Redis cache to clear stale sessions"}
+  {"type": "iot_reconnect", "description": "Reset IoT device client connections"}
+
+RULES:
+- Use real resource names from the infra_context provided.
+- For az_cli steps, use the exact resource group and resource names from infra_context.
+- Only generate steps that are safe, targeted, and reversible.
+- Do not generate steps that delete resources, drop tables, or modify access control.
+- Multiple steps are allowed if the fix requires them (e.g. kill connections then vacuum).
+- If no automated fix is safe, set fix_steps to [] and explain in why_it_occurred.
+- Severity: critical=employees cannot punch in/out, high=intermittent failures, medium=degraded, low=no user impact.
+
+Return strict JSON, no markdown:
+{"issues": [{"issue_id": "...", "title": "...", "summary": "...", "severity_label": "critical|high|medium|low", \
+"severity_score": 8, "why_it_occurred": "...", \
+"where_it_occurred": {"component": "...", "file_path": "", "line_number": "", "resource": "..."}, \
+"fix_steps": [{"type": "...", ...}], \
+"affected_resources": [{"name": "...", "kind": "...", "id": "..."}]}]}"""
+
     response = call_azure_openai_json(
         system_prompt,
         {
             "window_minutes": minutes,
-            "resources": build_resource_catalog(),
-            "fix_catalog": build_fix_catalog(),
+            "infra_context": build_infra_context(),
             "issues": issue_payload,
         },
     )
-    issues = response.get("issues", [])
     return {
         sanitize_text(item.get("issue_id")): item
-        for item in issues
+        for item in response.get("issues", [])
         if isinstance(item, dict) and sanitize_text(item.get("issue_id"))
     }
+
+
+# ─── Agentic fix execution ────────────────────────────────────────────────────
+
+_SAFE_AZ_CLI_VERBS = {
+    ("webapp", "restart"), ("webapp", "start"), ("webapp", "stop"),
+    ("functionapp", "restart"), ("functionapp", "start"), ("functionapp", "stop"),
+    ("postgres", "flexible-server", "restart"),
+    ("postgres", "flexible-server", "start"),
+    ("postgres", "flexible-server", "stop"),
+    ("iot", "hub", "restart"),
+}
+
+
+def _validate_az_cli_step(command: list[str]) -> None:
+    verb = tuple(command[:3]) if len(command) >= 3 else tuple(command[:2])
+    short = tuple(command[:2])
+    if verb not in _SAFE_AZ_CLI_VERBS and short not in _SAFE_AZ_CLI_VERBS:
+        raise RuntimeError(
+            f"az CLI command '{' '.join(command[:3])}' is not on the approved list. "
+            "Only restart/start/stop operations are allowed."
+        )
+
+
+def execute_fix_step(step: dict[str, Any]) -> str:
+    step_type = sanitize_text(step.get("type", ""))
+
+    if step_type == "az_cli":
+        command = step.get("command", [])
+        if not isinstance(command, list) or not command:
+            raise RuntimeError("az_cli step must include a non-empty 'command' list.")
+        _validate_az_cli_step(command)
+        ensure_azure_cli_login()
+        result = run_azure_cli_json(command)
+        return step.get("description") or f"az {' '.join(command)} completed."
+
+    if step_type == "sql":
+        query = sanitize_text(step.get("query", ""))
+        if not query:
+            raise RuntimeError("sql step must include a 'query'.")
+        db_url = get_admin_db_url()
+        with get_conn(db_url, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                try:
+                    rows = cur.fetchall()
+                    result_note = f"{len(rows)} row(s) affected"
+                except Exception:
+                    result_note = "executed"
+        return f"{step.get('description') or 'SQL executed'} — {result_note}."
+
+    if step_type == "arm_patch":
+        resource_id = sanitize_text(step.get("resource_id", ""))
+        api_version = sanitize_text(step.get("api_version", ""))
+        body = step.get("body")
+        if not resource_id or not api_version or not isinstance(body, dict):
+            raise RuntimeError("arm_patch step requires resource_id, api_version, and body.")
+        if AZURE_SUBSCRIPTION_ID and f"/subscriptions/{AZURE_SUBSCRIPTION_ID}/" not in resource_id:
+            raise RuntimeError("arm_patch resource_id is outside the configured subscription.")
+        token = run_azure_cli_access_token("https://management.azure.com/")
+        url = f"https://management.azure.com{resource_id}?api-version={api_version}"
+        req = urllib_request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            method="PATCH",
+        )
+        try:
+            with urllib_request.urlopen(req, timeout=30) as resp:
+                resp.read()
+        except urllib_error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(f"ARM PATCH failed: HTTP {exc.code} — {detail}") from exc
+        return f"{step.get('description') or 'ARM PATCH applied'} on {resource_id.split('/')[-1]}."
+
+    if step_type == "redis_flush":
+        client = get_redis_client()
+        if client is None:
+            raise RuntimeError("Redis is not configured.")
+        client.flushdb()
+        return step.get("description") or "Redis cache flushed."
+
+    if step_type == "iot_reconnect":
+        count = len(_tenant_iot_clients)
+        _tenant_iot_clients.clear()
+        return (step.get("description") or "IoT clients reset") + f" ({count} connection(s) cleared)."
+
+    raise RuntimeError(f"Unknown fix step type: '{step_type}'")
 
 
 def classify_error_fix(source_table: str, error_type: str, message: str) -> dict[str, Any]:
@@ -1226,8 +1332,9 @@ def load_recent_error_operations(minutes: int = 60, limit: int = 12) -> list[dic
                     "resource": sanitize_text(location.get("resource")) or fix["resource_name"],
                 },
                 "fix": fix,
+                "fix_steps": analysis.get("fix_steps") if issue_id in ai_analysis_by_id else [],
                 "affected_resources": affected_resources,
-                "analysis_source": sanitize_text(analysis.get("source")) or ("azure_openai" if issue_id in ai_analysis_by_id else "fallback_rules"),
+                "analysis_source": "azure_openai" if issue_id in ai_analysis_by_id else "fallback_rules",
             }
         )
 
@@ -3202,33 +3309,58 @@ def admin_pipeline_dismiss(request: Request, stage_id: str = Form(""), stage_nam
 @app.post("/admin/errors/apply")
 def admin_error_apply_fix(
     request: Request,
-    fix_type: str = Form(...),
+    fix_steps_json: str = Form(""),
+    fix_type: str = Form(""),
+    minutes: int = Form(60),
     source_table: str = Form(""),
     error_type: str = Form(""),
     example_message: str = Form(""),
-    minutes: int = Form(60),
 ):
     if not require_admin_session(request):
         return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
 
     del source_table, error_type, example_message
+
+    # AI-generated fix steps take priority over legacy fix_type
+    if fix_steps_json:
+        try:
+            steps = json.loads(fix_steps_json)
+        except json.JSONDecodeError:
+            return RedirectResponse(
+                f"/admin/errors?minutes={minutes}&error={urllib_parse.quote_plus('Invalid fix steps JSON.')}",
+                status_code=303,
+            )
+        results = []
+        try:
+            for step in steps:
+                results.append(execute_fix_step(step))
+            log_event(logging.INFO, "ai_fix_steps_applied", step_count=len(steps))
+            msg = " | ".join(results) or "Fix applied."
+            return RedirectResponse(
+                f"/admin/errors?minutes={minutes}&msg={urllib_parse.quote_plus(msg)}", status_code=303
+            )
+        except Exception as exc:
+            record_exception_to_telemetry(exc, action="execute_fix_step")
+            return RedirectResponse(
+                f"/admin/errors?minutes={minutes}&error={urllib_parse.quote_plus(str(exc))}", status_code=303
+            )
+
+    # Fallback: legacy fix_type for issues without AI steps
+    if not fix_type:
+        return RedirectResponse(f"/admin/errors?minutes={minutes}&error=No+fix+provided", status_code=303)
     fix = build_fix_metadata(fix_type)
-
     if not fix["is_available"]:
-        message = f"{fix['action_label']} is not enabled for this environment."
-        return RedirectResponse(f"/admin/errors?error={urllib_parse.quote_plus(message)}", status_code=303)
-
+        msg = f"{fix['action_label']} is not enabled for this environment."
+        return RedirectResponse(f"/admin/errors?error={urllib_parse.quote_plus(msg)}", status_code=303)
     try:
         result_message = apply_error_fix(fix_type)
         return RedirectResponse(
-            f"/admin/errors?minutes={minutes}&msg={urllib_parse.quote_plus(result_message)}",
-            status_code=303,
+            f"/admin/errors?minutes={minutes}&msg={urllib_parse.quote_plus(result_message)}", status_code=303
         )
     except Exception as exc:
         record_exception_to_telemetry(exc, action="apply_error_fix", fix_type=fix_type)
         return RedirectResponse(
-            f"/admin/errors?minutes={minutes}&error={urllib_parse.quote_plus(str(exc))}",
-            status_code=303,
+            f"/admin/errors?minutes={minutes}&error={urllib_parse.quote_plus(str(exc))}", status_code=303
         )
 
 

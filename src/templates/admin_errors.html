@@ -280,38 +280,63 @@
         <div class="sample-message">{{ issue.example_message }}</div>
         {% endif %}
 
-        {% if issue.fix.fix_type != "manual_investigation" %}
+        {% if issue.fix_steps %}
+        <!-- AI-generated fix steps -->
         <div class="fix-block">
-          <p class="fix-block-label">&#x1F527; Suggested automated fix</p>
+          <p class="fix-block-label">&#x2728; AI-generated fix plan</p>
+          {% for step in issue.fix_steps %}
+          <div style="margin-bottom:0.6rem; padding:0.55rem 0.7rem; border-radius:8px; background:#f1f5f9; font-size:0.83rem;">
+            <span style="font-weight:700; color:#1e40af;">
+              {% if step.type == "az_cli" %}az {{ step.command | join(' ') }}
+              {% elif step.type == "sql" %}SQL: {{ step.query }}
+              {% elif step.type == "arm_patch" %}ARM PATCH {{ step.resource_id }}
+              {% elif step.type == "redis_flush" %}Redis FLUSHDB
+              {% elif step.type == "iot_reconnect" %}IoT client reconnect
+              {% else %}{{ step.type }}{% endif %}
+            </span>
+            <span style="color:#475569; margin-left:0.5rem;">— {{ step.description }}</span>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="issue-actions">
+          <form method="post" action="/admin/errors/apply" class="inline-form">
+            <input type="hidden" name="minutes" value="{{ minutes }}" />
+            <input type="hidden" name="fix_steps_json" value="{{ issue.fix_steps | tojson }}" />
+            <button class="btn" type="submit">Accept and apply fix</button>
+          </form>
+          <form method="post" action="/admin/errors/deny" class="inline-form">
+            <input type="hidden" name="minutes" value="{{ minutes }}" />
+            <input type="hidden" name="fix_label" value="{{ issue.title }}" />
+            <button class="btn secondary" type="submit">Deny fix</button>
+          </form>
+        </div>
+        {% elif issue.fix.fix_type != "manual_investigation" %}
+        <!-- Fallback fix when AI didn't generate steps -->
+        <div class="fix-block">
+          <p class="fix-block-label">&#x1F527; Suggested fix</p>
           <h3>{{ issue.fix.action_label }}</h3>
           <p>{{ issue.fix.reason }}</p>
           {% if not issue.fix.is_available %}
-          <p style="margin-top:0.4rem; color:#dc2626; font-size:0.82rem;">
-            Fix is not enabled for this environment (<code>ALLOW_*</code> flag is off).
-          </p>
+          <p style="margin-top:0.4rem; color:#dc2626; font-size:0.82rem;">Fix not enabled (<code>ALLOW_*</code> flag is off).</p>
           {% endif %}
         </div>
-        {% endif %}
-
         <div class="issue-actions">
-          {% if issue.fix.is_available and issue.fix.fix_type != "manual_investigation" %}
+          {% if issue.fix.is_available %}
           <form method="post" action="/admin/errors/apply" class="inline-form">
             <input type="hidden" name="minutes" value="{{ minutes }}" />
             <input type="hidden" name="fix_type" value="{{ issue.fix.fix_type }}" />
-            <input type="hidden" name="source_table" value="{{ issue.source_table }}" />
-            <input type="hidden" name="error_type" value="{{ issue.error_type }}" />
-            <input type="hidden" name="example_message" value="{{ issue.example_message }}" />
             <button class="btn" type="submit">Accept and apply fix</button>
           </form>
+          {% endif %}
           <form method="post" action="/admin/errors/deny" class="inline-form">
             <input type="hidden" name="minutes" value="{{ minutes }}" />
             <input type="hidden" name="fix_label" value="{{ issue.fix.action_label }}" />
             <button class="btn secondary" type="submit">Deny fix</button>
           </form>
-          {% else %}
-          <span class="chip chip-muted">Manual review required — no safe automated fix available</span>
-          {% endif %}
         </div>
+        {% else %}
+        <span class="chip chip-muted" style="margin-top:0.75rem; display:inline-flex;">Manual review required</span>
+        {% endif %}
 
       </div>
       {% endfor %}
