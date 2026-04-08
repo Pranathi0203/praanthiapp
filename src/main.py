@@ -2350,13 +2350,38 @@ def _build_pipeline_stage(stage_id: str, probe_result: dict[str, Any]) -> dict[s
     }
 
 
+def _run_az_probe(args: list[str]) -> dict | list:
+    """Run an az CLI command without triggering ensure_azure_cli_login (called once before probes start)."""
+    try:
+        completed = subprocess.run(
+            ["az", *args, "-o", "json", "--only-show-errors"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=20,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("az CLI probe timed out after 20s") from exc
+    except FileNotFoundError as exc:
+        raise RuntimeError("Azure CLI is not installed") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip() or "Unknown Azure CLI error"
+        raise RuntimeError(detail) from exc
+    raw = (completed.stdout or "").strip()
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"az CLI returned non-JSON: {raw}") from exc
+
+
 def _probe_webapp_raw() -> dict[str, Any]:
     if not WEBAPP_NAME or not AZURE_RESOURCE_GROUP:
         return {"status": "not_configured"}
     started = time.perf_counter()
     try:
-        ensure_azure_cli_login()
-        result = run_azure_cli_json([
+        result = _run_az_probe([
             "webapp", "show",
             "--resource-group", AZURE_RESOURCE_GROUP,
             "--name", WEBAPP_NAME,
@@ -2376,8 +2401,7 @@ def _probe_iothub_raw() -> dict[str, Any]:
         return {"status": "not_configured"}
     started = time.perf_counter()
     try:
-        ensure_azure_cli_login()
-        result = run_azure_cli_json([
+        result = _run_az_probe([
             "iot", "hub", "show",
             "--resource-group", AZURE_RESOURCE_GROUP,
             "--name", IOTHUB_NAME,
@@ -2397,8 +2421,7 @@ def _probe_servicebus_raw() -> dict[str, Any]:
         return {"status": "not_configured"}
     started = time.perf_counter()
     try:
-        ensure_azure_cli_login()
-        result = run_azure_cli_json([
+        result = _run_az_probe([
             "servicebus", "namespace", "show",
             "--resource-group", AZURE_RESOURCE_GROUP,
             "--name", SERVICEBUS_NAMESPACE_NAME,
@@ -2418,8 +2441,7 @@ def _probe_functionapp_raw() -> dict[str, Any]:
         return {"status": "not_configured"}
     started = time.perf_counter()
     try:
-        ensure_azure_cli_login()
-        result = run_azure_cli_json([
+        result = _run_az_probe([
             "functionapp", "show",
             "--resource-group", AZURE_RESOURCE_GROUP,
             "--name", FUNCTION_APP_NAME,
@@ -2453,6 +2475,10 @@ def _probe_redis_raw() -> dict[str, Any]:
 
 def load_pipeline_stages() -> list[dict[str, Any]]:
     """Concurrently probe all pipeline stages and return structured health objects."""
+    # Login once before spawning threads — concurrent az CLI calls share the same
+    # token cache files and will collide if each probe triggers its own login check.
+    ensure_azure_cli_login()
+
     probe_map: dict[str, Any] = {
         "webapp": _probe_webapp_raw,
         "iothub": _probe_iothub_raw,
