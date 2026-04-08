@@ -3,24 +3,154 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Error Operations</title>
+    <title>AI Error Guardian</title>
     <link rel="stylesheet" href="/static/style.css" />
+    <style>
+      .error-card {
+        border-radius: 16px;
+        border: 1.5px solid #dde5f0;
+        background: #fff;
+        padding: 1.4rem 1.5rem;
+        margin-bottom: 1.2rem;
+      }
+      .error-card.sev-critical { border-left: 5px solid #dc2626; }
+      .error-card.sev-high     { border-left: 5px solid #ea580c; }
+      .error-card.sev-medium   { border-left: 5px solid #d97706; }
+      .error-card.sev-low      { border-left: 5px solid #3b82f6; }
+
+      .error-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 1rem;
+        margin-bottom: 0.9rem;
+      }
+      .error-title { margin: 0; font-size: 1.05rem; color: #1a2838; }
+      .error-source {
+        font-size: 0.72rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #64748b;
+        margin-bottom: 0.25rem;
+      }
+      .sev-badge {
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        padding: 0.3rem 0.75rem;
+        border-radius: 999px;
+        font-size: 0.72rem;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .sev-badge.sev-critical { background: rgba(220,38,38,0.12); color: #b91c1c; }
+      .sev-badge.sev-high     { background: rgba(234,88,12,0.12); color: #9a3412; }
+      .sev-badge.sev-medium   { background: rgba(217,119,6,0.12); color: #92400e; }
+      .sev-badge.sev-low      { background: rgba(59,130,246,0.12); color: #1d4ed8; }
+
+      .error-meta {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+        gap: 0.75rem;
+        padding: 0.75rem 0.9rem;
+        border-radius: 10px;
+        background: rgba(243,247,252,0.95);
+        margin-bottom: 0.9rem;
+        font-size: 0.85rem;
+      }
+      .error-meta dt { color: #64748b; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.15rem; }
+      .error-meta dd { margin: 0; font-weight: 600; color: #223041; }
+
+      .diagnosis-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.75rem;
+        margin-bottom: 0.9rem;
+      }
+      @media (max-width: 640px) { .diagnosis-grid { grid-template-columns: 1fr; } }
+
+      .diag-block {
+        padding: 0.75rem 0.9rem;
+        border-radius: 10px;
+        background: rgba(248,250,253,0.9);
+        border: 1px solid #e8eef6;
+      }
+      .diag-block h4 { margin: 0 0 0.35rem; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; }
+      .diag-block p  { margin: 0; font-size: 0.88rem; color: #334155; line-height: 1.5; }
+
+      .fix-block {
+        padding: 0.9rem 1rem;
+        border-radius: 12px;
+        background: linear-gradient(135deg, rgba(59,130,246,0.05), rgba(99,102,241,0.04));
+        border: 1px solid rgba(59,130,246,0.18);
+        margin-bottom: 0.9rem;
+      }
+      .fix-block-label {
+        font-size: 0.7rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #3b82f6;
+        margin-bottom: 0.4rem;
+      }
+      .fix-block h3 { margin: 0 0 0.3rem; font-size: 0.95rem; color: #1e293b; }
+      .fix-block p  { margin: 0; font-size: 0.85rem; color: #475569; line-height: 1.5; }
+
+      .sample-message {
+        margin: 0.6rem 0 0.9rem;
+        padding: 0.65rem 0.85rem;
+        border-radius: 8px;
+        background: #f1f5f9;
+        font-size: 0.82rem;
+        color: #334155;
+        font-family: monospace;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+
+      .ai-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        font-size: 0.7rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #7c3aed;
+        margin-bottom: 0.5rem;
+      }
+
+      .scan-bar {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+      }
+      .scan-bar input[type=number] {
+        width: 80px;
+        padding: 0.35rem 0.6rem;
+        border: 1.5px solid #c8d6e5;
+        border-radius: 8px;
+        font-size: 0.9rem;
+      }
+    </style>
   </head>
   <body>
     <main class="container container-wide">
       <section class="hero admin-hero">
         <div>
           <p class="eyebrow">Admin App</p>
-          <h1>Error operations and guided fixes</h1>
+          <h1>AI Error Guardian</h1>
           <p>
-            Scan recent failures, review risk, and accept or deny bounded automated fixes.<br />
+            Reads App Insights logs, identifies failures, and suggests fixes.<br />
+            Approve to apply a fix automatically or deny to dismiss.<br />
             Signed in as <strong>{{ admin_email }}</strong>
           </p>
         </div>
         <div class="hero-actions">
-          <a class="icon-btn" href="/admin/errors?minutes={{ minutes }}" title="Refresh error scan" aria-label="Refresh error scan">
-            &#x21bb;
-          </a>
+          <a class="icon-btn" href="/admin/errors?minutes={{ minutes }}" title="Refresh scan" aria-label="Refresh scan">&#x21bb;</a>
           <a class="btn secondary" href="/admin/dashboard">Back to dashboard</a>
           <a class="btn" href="/admin/logout">Logout</a>
         </div>
@@ -29,189 +159,169 @@
       {% if msg %}<p class="ok banner">{{ msg }}</p>{% endif %}
       {% if error %}<p class="error banner">{{ error }}</p>{% endif %}
 
+      <!-- Scan control -->
       <section class="card">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">Scan settings</p>
-            <h2>Recent telemetry review</h2>
-          </div>
-        </div>
-
         {% if error_ops_configured %}
-        <form method="get" action="/admin/errors" class="inline-form">
-          <label>
-            Minutes to scan
-            <input type="number" min="5" max="1440" name="minutes" value="{{ minutes }}" />
-          </label>
-          <button class="btn compact-btn" type="submit">Scan errors</button>
+        <form method="get" action="/admin/errors">
+          <div class="scan-bar">
+            <label for="minutes-input" style="font-weight:600; color:#334155;">Scan last</label>
+            <input id="minutes-input" type="number" min="5" max="1440" name="minutes" value="{{ minutes }}" />
+            <label for="minutes-input" style="color:#64748b;">minutes of App Insights logs</label>
+            <button class="btn" type="submit">Scan now</button>
+          </div>
         </form>
-        <p class="note-copy">
-          This page reads grouped recent failures from App Insights and Log Analytics, sends them to Azure OpenAI for
-          diagnosis, and shows a suggested fix before any action is taken.
+        <p class="note-copy" style="margin-top:0.75rem;">
+          Queries AppExceptions, AppTraces, FunctionAppLogs, AzureDiagnostics, and PGSQLServerLogs.
+          Azure OpenAI diagnoses each failure group and recommends a bounded fix.
+          AI diagnosis: <strong>{{ "On" if ai_error_analysis_configured else "Off — check AZURE_OPENAI_* env vars" }}</strong>
         </p>
         {% else %}
         <p>
-          Add <code>LOG_ANALYTICS_WORKSPACE_ID</code> or configure <code>AZURE_SUBSCRIPTION_ID</code>,
-          <code>AZURE_RESOURCE_GROUP</code>, and <code>APPLICATION_INSIGHTS_NAME</code> so the page can scan telemetry.
+          Configure <code>LOG_ANALYTICS_WORKSPACE_ID</code> or set <code>AZURE_SUBSCRIPTION_ID</code>,
+          <code>AZURE_RESOURCE_GROUP</code>, and <code>APPLICATION_INSIGHTS_NAME</code> to enable log scanning.
         </p>
         {% endif %}
       </section>
 
+      <!-- Stats -->
       <section class="stats-grid">
         <article class="stat-card">
           <span class="stat-label">Issues found</span>
-          <strong class="stat-value">{{ issues|length }}</strong>
+          <strong class="stat-value">{{ issues | length }}</strong>
         </article>
         <article class="stat-card">
           <span class="stat-label">Critical</span>
-          <strong class="stat-value">{{ issue_overview.counts.critical }}</strong>
+          <strong class="stat-value" style="color:#dc2626">{{ issue_overview.counts.critical }}</strong>
         </article>
         <article class="stat-card">
           <span class="stat-label">High</span>
-          <strong class="stat-value">{{ issue_overview.counts.high }}</strong>
+          <strong class="stat-value" style="color:#ea580c">{{ issue_overview.counts.high }}</strong>
         </article>
         <article class="stat-card">
-          <span class="stat-label">Web app fixes</span>
-          <strong class="stat-value">{{ "On" if allow_webapp_restart else "Off" }}</strong>
+          <span class="stat-label">Medium</span>
+          <strong class="stat-value" style="color:#d97706">{{ issue_overview.counts.medium }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">DB fixes</span>
+          <strong class="stat-value">{{ "On" if allow_postgres_restart else "Off" }}</strong>
         </article>
         <article class="stat-card">
           <span class="stat-label">Pipeline fixes</span>
           <strong class="stat-value">{{ "On" if allow_functionapp_restart else "Off" }}</strong>
         </article>
         <article class="stat-card">
-          <span class="stat-label">Database fixes</span>
-          <strong class="stat-value">{{ "On" if allow_postgres_restart else "Off" }}</strong>
-        </article>
-        <article class="stat-card">
-          <span class="stat-label">AI diagnosis</span>
-          <strong class="stat-value">{{ "On" if ai_error_analysis_configured else "Off" }}</strong>
+          <span class="stat-label">Webapp fixes</span>
+          <strong class="stat-value">{{ "On" if allow_webapp_restart else "Off" }}</strong>
         </article>
       </section>
 
       {% if issues %}
-      <section class="card ops-overview">
-        <p class="eyebrow">What needs attention first</p>
-        <h2>{{ issue_overview.headline }}</h2>
-        <p class="issue-summary">{{ issue_overview.guidance }}</p>
+
+      <!-- Top-level headline from the most critical issue -->
+      <section class="card" style="border-left: 4px solid #3b82f6; background: linear-gradient(135deg, rgba(59,130,246,0.04), rgba(99,102,241,0.03));">
+        <p class="ai-tag">&#x2728; AI summary</p>
+        <h2 style="margin:0 0 0.4rem;">{{ issue_overview.headline }}</h2>
+        <p style="margin:0; color:#475569;">{{ issue_overview.guidance }}</p>
       </section>
 
-      <section class="issue-list">
-        {% for issue in issues %}
-        <details class="card issue-row" {% if loop.first %}open{% endif %}>
-          <summary class="issue-summary-row">
-            <div>
-              <p class="eyebrow">{{ issue.fix.component }}</p>
-              <h2>{{ issue.title }}</h2>
-              <p class="issue-subtext">
-                {{ issue.count }} occurrence{{ "" if issue.count == 1 else "s" }} in the last {{ minutes }} minutes
-                {% if issue.role == "symptom" %}<span class="chip chip-muted">Related symptom</span>{% endif %}
-              </p>
-            </div>
-            <div class="issue-summary-right">
-              <span class="severity-pill severity-{{ issue.severity }}">{{ issue.severity|upper }}</span>
-              <span class="issue-action-label">Score {{ issue.severity_score }}/10</span>
-            </div>
-          </summary>
+      <!-- Error cards -->
+      {% for issue in issues %}
+      <div class="error-card sev-{{ issue.severity }}">
 
-          <div class="issue-meta-grid">
-            <div>
-              <span class="meta-label">Occurrences</span>
-              <strong>{{ issue.count }}</strong>
-            </div>
-            <div>
-              <span class="meta-label">First seen</span>
-              <strong>{{ issue.first_seen or "-" }}</strong>
-            </div>
-            <div>
-              <span class="meta-label">Last seen</span>
-              <strong>{{ issue.last_seen or "-" }}</strong>
-            </div>
-            <div>
-              <span class="meta-label">Recommended fix</span>
-              <strong>{{ issue.fix.action_label }}</strong>
-            </div>
+        <div class="error-top">
+          <div>
+            <p class="error-source">{{ issue.fix.component }} &middot; {{ issue.source_table }}</p>
+            <h2 class="error-title">{{ issue.title }}</h2>
           </div>
+          <span class="sev-badge sev-{{ issue.severity }}">{{ issue.severity }}</span>
+        </div>
 
-          <section class="impact-block">
-            <h3>What error is this?</h3>
-            <p class="issue-summary">{{ issue.summary }}</p>
-          </section>
-
-          <section class="impact-block">
-            <h3>Where it occurred</h3>
-            <p>
-              <strong>{{ issue.where_it_occurred.component }}</strong>
-              {% if issue.where_it_occurred.resource %}
-              <span class="chip chip-muted">{{ issue.where_it_occurred.resource }}</span>
-              {% endif %}
-            </p>
-            {% if issue.where_it_occurred.file_path and issue.where_it_occurred.line_number %}
-            <p class="raw-message">
-              <strong>Code location:</strong> <code>{{ issue.where_it_occurred.file_path }}:{{ issue.where_it_occurred.line_number }}</code>
-            </p>
-            {% else %}
-            <p class="raw-message">No exact code line was present in telemetry for this issue.</p>
-            {% endif %}
-          </section>
-
-          <section class="impact-block">
-            <h3>Why it occurred</h3>
-            <p class="issue-summary">{{ issue.why_it_occurred }}</p>
-          </section>
-
-          <section class="impact-block">
-            <h3>Affected resources</h3>
-            <ul class="plain-list resource-list">
-              {% for resource in issue.affected_resources %}
-              <li>
-                <strong>{{ resource.name }}</strong>
-                <span class="chip chip-muted">{{ resource.kind|replace('_', ' ')|title }}</span>
-                {% if resource.id %}<div class="resource-id"><code>{{ resource.id }}</code></div>{% endif %}
-              </li>
-              {% endfor %}
-            </ul>
-          </section>
-
-          <section class="impact-block">
-            <h3>Suggested fix</h3>
-            <p><strong>{{ issue.fix.action_label }}</strong></p>
-            <p>{{ issue.fix.reason }}</p>
-            <p>Target component: <strong>{{ issue.fix.component }}</strong></p>
-            {% if issue.example_message %}
-            <p class="raw-message"><strong>Telemetry sample:</strong> {{ issue.example_message }}</p>
-            {% endif %}
-            {% if issue.example_details %}
-            <p class="raw-message"><strong>Telemetry details:</strong> {{ issue.example_details }}</p>
-            {% endif %}
-          </section>
-
-          <div class="issue-actions">
-            {% if issue.fix.is_available and issue.fix.fix_type != "manual_investigation" %}
-            <form method="post" action="/admin/errors/apply" class="inline-form">
-              <input type="hidden" name="minutes" value="{{ minutes }}" />
-              <input type="hidden" name="fix_type" value="{{ issue.fix.fix_type }}" />
-              <input type="hidden" name="source_table" value="{{ issue.source_table }}" />
-              <input type="hidden" name="error_type" value="{{ issue.error_type }}" />
-              <input type="hidden" name="example_message" value="{{ issue.example_message }}" />
-              <button class="btn compact-btn" type="submit">Accept and apply fix</button>
-            </form>
-            <form method="post" action="/admin/errors/deny" class="inline-form">
-              <input type="hidden" name="minutes" value="{{ minutes }}" />
-              <input type="hidden" name="fix_label" value="{{ issue.fix.action_label }}" />
-              <button class="btn danger compact-btn" type="submit">Deny fix</button>
-            </form>
-            {% else %}
-            <span class="chip chip-muted">Manual review required</span>
-            {% endif %}
+        <dl class="error-meta">
+          <div>
+            <dt>Occurrences</dt>
+            <dd>{{ issue.count }} in {{ minutes }}m</dd>
           </div>
-        </details>
-        {% endfor %}
-      </section>
+          <div>
+            <dt>First seen</dt>
+            <dd>{{ issue.first_seen or "—" }}</dd>
+          </div>
+          <div>
+            <dt>Last seen</dt>
+            <dd>{{ issue.last_seen or "—" }}</dd>
+          </div>
+          <div>
+            <dt>AI score</dt>
+            <dd>{{ issue.severity_score }}/10</dd>
+          </div>
+          <div>
+            <dt>Suggested fix</dt>
+            <dd>{{ issue.fix.action_label }}</dd>
+          </div>
+          {% if issue.where_it_occurred.resource %}
+          <div>
+            <dt>Resource</dt>
+            <dd>{{ issue.where_it_occurred.resource }}</dd>
+          </div>
+          {% endif %}
+        </dl>
+
+        <div class="diagnosis-grid">
+          <div class="diag-block">
+            <h4>What happened</h4>
+            <p>{{ issue.summary }}</p>
+          </div>
+          <div class="diag-block">
+            <h4>Why it occurred</h4>
+            <p>{{ issue.why_it_occurred }}</p>
+          </div>
+        </div>
+
+        {% if issue.example_message %}
+        <div class="sample-message">{{ issue.example_message }}</div>
+        {% endif %}
+
+        {% if issue.fix.fix_type != "manual_investigation" %}
+        <div class="fix-block">
+          <p class="fix-block-label">&#x1F527; Suggested automated fix</p>
+          <h3>{{ issue.fix.action_label }}</h3>
+          <p>{{ issue.fix.reason }}</p>
+          {% if not issue.fix.is_available %}
+          <p style="margin-top:0.4rem; color:#dc2626; font-size:0.82rem;">
+            Fix is not enabled for this environment (<code>ALLOW_*</code> flag is off).
+          </p>
+          {% endif %}
+        </div>
+        {% endif %}
+
+        <div class="issue-actions">
+          {% if issue.fix.is_available and issue.fix.fix_type != "manual_investigation" %}
+          <form method="post" action="/admin/errors/apply" class="inline-form">
+            <input type="hidden" name="minutes" value="{{ minutes }}" />
+            <input type="hidden" name="fix_type" value="{{ issue.fix.fix_type }}" />
+            <input type="hidden" name="source_table" value="{{ issue.source_table }}" />
+            <input type="hidden" name="error_type" value="{{ issue.error_type }}" />
+            <input type="hidden" name="example_message" value="{{ issue.example_message }}" />
+            <button class="btn" type="submit">Accept and apply fix</button>
+          </form>
+          <form method="post" action="/admin/errors/deny" class="inline-form">
+            <input type="hidden" name="minutes" value="{{ minutes }}" />
+            <input type="hidden" name="fix_label" value="{{ issue.fix.action_label }}" />
+            <button class="btn secondary" type="submit">Deny fix</button>
+          </form>
+          {% else %}
+          <span class="chip chip-muted">Manual review required — no safe automated fix available</span>
+          {% endif %}
+        </div>
+
+      </div>
+      {% endfor %}
+
       {% elif error_ops_configured %}
       <section class="card">
-        <p>No recurring errors were returned for the last {{ minutes }} minutes.</p>
+        <p class="ok banner">No recurring errors found in the last {{ minutes }} minutes. The pipeline looks clean.</p>
       </section>
       {% endif %}
+
     </main>
   </body>
 </html>
