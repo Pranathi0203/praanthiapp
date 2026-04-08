@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Pipeline Guardian</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <style>
+      .pipeline-flow {
+        overflow-x: auto;
+        padding: 1.5rem;
+      }
+      .pipeline-track {
+        display: flex;
+        align-items: center;
+        gap: 0;
+        min-width: max-content;
+      }
+      .pipeline-node {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.7rem 1rem;
+        border-radius: 12px;
+        border: 2px solid #dde5f0;
+        background: #f8fafd;
+        min-width: 110px;
+        text-align: center;
+      }
+      .pipeline-node.status-healthy { border-color: #22c55e; background: rgba(34,197,94,0.07); }
+      .pipeline-node.status-unhealthy { border-color: #ef4444; background: rgba(239,68,68,0.07); }
+      .pipeline-node.status-degraded { border-color: #f59e0b; background: rgba(245,158,11,0.07); }
+      .pipeline-node.status-unknown,
+      .pipeline-node.status-not_configured { border-color: #94a3b8; background: rgba(148,163,184,0.07); }
+      .pipeline-node-label {
+        font-size: 0.78rem;
+        font-weight: 700;
+        color: #223041;
+        line-height: 1.2;
+      }
+      .pipeline-dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #94a3b8;
+      }
+      .status-healthy .pipeline-dot { background: #22c55e; }
+      .status-unhealthy .pipeline-dot { background: #ef4444; }
+      .status-degraded .pipeline-dot { background: #f59e0b; }
+      .pipeline-arrow {
+        flex-shrink: 0;
+        color: #94a3b8;
+        font-size: 1.4rem;
+        padding: 0 0.3rem;
+        line-height: 1;
+      }
+      .stage-status-text {
+        font-size: 0.72rem;
+        color: #5a6b84;
+        line-height: 1.3;
+      }
+      .ai-card {
+        border-left: 4px solid #3b82f6;
+        background: linear-gradient(135deg, rgba(59,130,246,0.05), rgba(99,102,241,0.04));
+      }
+      .ai-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #3b82f6;
+        margin-bottom: 0.5rem;
+      }
+      .pipeline-issue-card {
+        border-radius: 16px;
+        border: 1.5px solid #dde5f0;
+        padding: 1.25rem;
+        margin-bottom: 1rem;
+        background: #fff;
+      }
+      .pipeline-issue-card.severity-high { border-color: #fca5a5; background: rgba(239,68,68,0.03); }
+      .pipeline-issue-card.severity-medium { border-color: #fcd34d; background: rgba(245,158,11,0.03); }
+      .pipeline-issue-card.severity-low { border-color: #93c5fd; background: rgba(59,130,246,0.03); }
+      .issue-header-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 1rem;
+        margin-bottom: 0.75rem;
+      }
+      .stage-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.3rem 0.75rem;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .stage-badge.status-unhealthy { background: rgba(239,68,68,0.12); color: #b91c1c; }
+      .stage-badge.status-degraded { background: rgba(245,158,11,0.12); color: #92400e; }
+      .stage-badge.status-unknown { background: rgba(148,163,184,0.15); color: #475569; }
+      .fix-box {
+        margin: 0.85rem 0;
+        padding: 0.85rem 1rem;
+        border-radius: 12px;
+        background: linear-gradient(180deg, rgba(243,247,252,0.95), rgba(233,240,249,0.9));
+      }
+      .fix-box-label {
+        font-size: 0.72rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #5a6b84;
+        margin-bottom: 0.4rem;
+      }
+      .fix-name {
+        font-weight: 700;
+        color: #223041;
+        margin-bottom: 0.3rem;
+      }
+      .fix-reason {
+        font-size: 0.88rem;
+        color: #42556f;
+        margin: 0;
+      }
+      .stage-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 1rem;
+        margin-top: 1.5rem;
+      }
+      .stage-card {
+        padding: 1.1rem 1.25rem;
+        border-radius: 14px;
+        border: 1.5px solid #dde5f0;
+        background: #f8fafd;
+      }
+      .stage-card.status-healthy { border-color: #bbf7d0; background: rgba(34,197,94,0.04); }
+      .stage-card.status-unhealthy { border-color: #fca5a5; background: rgba(239,68,68,0.04); }
+      .stage-card.status-degraded { border-color: #fcd34d; background: rgba(245,158,11,0.04); }
+      .stage-card-name { font-weight: 700; color: #223041; margin-bottom: 0.3rem; }
+      .stage-card-desc { font-size: 0.84rem; color: #5a6b84; margin-bottom: 0.5rem; }
+      .stage-card-status { font-size: 0.82rem; font-weight: 600; }
+      .stage-card-status.status-healthy { color: #16a34a; }
+      .stage-card-status.status-unhealthy { color: #dc2626; }
+      .stage-card-status.status-degraded { color: #d97706; }
+      .stage-card-status.status-unknown,
+      .stage-card-status.status-not_configured { color: #64748b; }
+      .latency-note { font-size: 0.78rem; color: #7a8fa8; margin-top: 0.2rem; }
+    </style>
+  </head>
+  <body>
+    <main class="container container-wide">
+      <section class="hero admin-hero">
+        <div>
+          <p class="eyebrow">Admin App</p>
+          <h1>Pipeline Guardian</h1>
+          <p>
+            Real-time health of every stage from client request to database write.<br />
+            Accept or deny AI-suggested fixes to restore service automatically.<br />
+            Signed in as <strong>{{ admin_email }}</strong>
+          </p>
+        </div>
+        <div class="hero-actions">
+          <a class="icon-btn" href="/admin/pipeline" title="Refresh scan" aria-label="Refresh scan">&#x21bb;</a>
+          <a class="btn secondary" href="/admin/dashboard">Back to dashboard</a>
+          <a class="btn" href="/admin/logout">Logout</a>
+        </div>
+      </section>
+
+      {% if msg %}<p class="ok banner">{{ msg }}</p>{% endif %}
+      {% if error %}<p class="error banner">{{ error }}</p>{% endif %}
+
+      <!-- Pipeline flow diagram -->
+      <section class="card pipeline-flow">
+        <p class="eyebrow" style="margin-bottom:1rem;">Request journey</p>
+        <div class="pipeline-track">
+          {% for stage in stages %}
+          <div class="pipeline-node status-{{ stage.status }}">
+            <div class="pipeline-dot"></div>
+            <span class="pipeline-node-label">{{ stage.stage_name }}</span>
+            <span class="stage-status-text">{{ stage.status | replace('_', ' ') | title }}</span>
+          </div>
+          {% if not loop.last %}
+          <span class="pipeline-arrow">&#x2192;</span>
+          {% endif %}
+          {% endfor %}
+        </div>
+      </section>
+
+      <!-- Stats -->
+      <section class="stats-grid">
+        <article class="stat-card">
+          <span class="stat-label">Total stages</span>
+          <strong class="stat-value">{{ stages | length }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">Healthy</span>
+          <strong class="stat-value" style="color:#16a34a">{{ stage_counts.healthy }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">Unhealthy</span>
+          <strong class="stat-value severity-high">{{ stage_counts.unhealthy }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">Degraded</span>
+          <strong class="stat-value severity-medium">{{ stage_counts.degraded }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">Unknown / unconfigured</span>
+          <strong class="stat-value">{{ stage_counts.unknown }}</strong>
+        </article>
+      </section>
+
+      <!-- AI Narrative -->
+      {% if ai_narrative %}
+      <section class="card ai-card">
+        <p class="ai-label">&#x2728; AI diagnosis</p>
+        <p style="margin:0; color:#223041;">{{ ai_narrative }}</p>
+      </section>
+      {% endif %}
+
+      <!-- Issues requiring attention -->
+      {% if issues %}
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Pipeline failures</p>
+            <h2>{{ issues | length }} stage{{ 's' if issues | length != 1 }} need{{ '' if issues | length != 1 else 's' }} attention</h2>
+          </div>
+        </div>
+        <p class="note-copy">
+          Each failing stage blocks the request path downstream. Fixes are bounded and reversible.
+          Accept to apply automatically or dismiss to acknowledge without action.
+        </p>
+      </section>
+
+      <div>
+        {% for stage in issues %}
+        <div class="pipeline-issue-card severity-{{ stage.severity_class }}">
+          <div class="issue-header-row">
+            <div>
+              <p class="eyebrow">{{ stage.stage_name }}</p>
+              <h2 style="margin:0.2rem 0 0.4rem; font-size:1.1rem; color:#223041;">{{ stage.issue_title or stage.message }}</h2>
+              <p style="margin:0; font-size:0.88rem; color:#5a6b84;">{{ stage.description }}</p>
+            </div>
+            <span class="stage-badge status-{{ stage.status }}">{{ stage.status | replace('_', ' ') | upper }}</span>
+          </div>
+
+          <div class="issue-meta-grid">
+            <div>
+              <span class="meta-label">Stage</span>
+              <span class="meta-value">{{ stage.stage_name }}</span>
+            </div>
+            <div>
+              <span class="meta-label">Status detail</span>
+              <span class="meta-value">{{ stage.message }}</span>
+            </div>
+            {% if stage.latency_ms is not none %}
+            <div>
+              <span class="meta-label">Response time</span>
+              <span class="meta-value">{{ stage.latency_ms }}ms</span>
+            </div>
+            {% endif %}
+            {% if stage.fix %}
+            <div>
+              <span class="meta-label">Fix risk</span>
+              <span class="meta-value">{{ stage.fix.risk | upper }}</span>
+            </div>
+            {% endif %}
+          </div>
+
+          {% if stage.fix %}
+          <div class="fix-box">
+            <p class="fix-box-label">Suggested fix</p>
+            <p class="fix-name">{{ stage.fix.action_label }}</p>
+            <p class="fix-reason">{{ stage.fix.reason }}</p>
+            <p class="fix-reason" style="margin-top:0.3rem;">Target: <strong>{{ stage.fix.resource_name }}</strong></p>
+          </div>
+
+          <div class="issue-actions">
+            {% if stage.fix.is_available %}
+            <form method="post" action="/admin/pipeline/apply">
+              <input type="hidden" name="fix_type" value="{{ stage.fix.fix_type }}" />
+              <input type="hidden" name="stage_id" value="{{ stage.stage_id }}" />
+              <button class="btn" type="submit">Accept and apply fix</button>
+            </form>
+            {% else %}
+            <button class="btn" disabled title="Fix not enabled for this environment">Apply fix (not enabled)</button>
+            {% endif %}
+            <form method="post" action="/admin/pipeline/dismiss">
+              <input type="hidden" name="stage_id" value="{{ stage.stage_id }}" />
+              <input type="hidden" name="stage_name" value="{{ stage.stage_name }}" />
+              <button class="btn secondary" type="submit">Dismiss</button>
+            </form>
+          </div>
+          {% else %}
+          <p class="note-copy" style="margin-top:0.75rem;">No automated fix is available for this stage. Review manually.</p>
+          <div class="issue-actions" style="margin-top:0.75rem;">
+            <form method="post" action="/admin/pipeline/dismiss">
+              <input type="hidden" name="stage_id" value="{{ stage.stage_id }}" />
+              <input type="hidden" name="stage_name" value="{{ stage.stage_name }}" />
+              <button class="btn secondary" type="submit">Dismiss</button>
+            </form>
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+
+      {% else %}
+      <section class="card">
+        <p class="ok banner">All pipeline stages are healthy — no action required.</p>
+      </section>
+      {% endif %}
+
+      <!-- All stages overview -->
+      <section class="card" style="margin-top:2rem;">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Stage overview</p>
+            <h2>Full pipeline health snapshot</h2>
+          </div>
+        </div>
+        <div class="stage-grid">
+          {% for stage in stages %}
+          <div class="stage-card status-{{ stage.status }}">
+            <p class="stage-card-name">{{ stage.stage_name }}</p>
+            <p class="stage-card-desc">{{ stage.description }}</p>
+            <p class="stage-card-status status-{{ stage.status }}">{{ stage.message }}</p>
+            {% if stage.latency_ms is not none %}
+            <p class="latency-note">{{ stage.latency_ms }}ms</p>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,3 +1,4 @@
+import concurrent.futures
 import contextvars
 import hashlib
 import json
@@ -2222,6 +2223,299 @@ def build_health_payload() -> tuple[dict[str, Any], int]:
     return payload, status_code
 
 
+# ─── Pipeline Guardian ────────────────────────────────────────────────────────
+
+_PIPELINE_STAGE_META = {
+    "webapp": {
+        "stage_name": "Web Application",
+        "description": "FastAPI app serving HTTP requests, auth, REST API, and employee portal.",
+        "pipeline_position": 1,
+    },
+    "iothub": {
+        "stage_name": "IoT Hub",
+        "description": "Receives device-to-cloud attendance events from employee clients via AMQP.",
+        "pipeline_position": 2,
+    },
+    "servicebus": {
+        "stage_name": "Service Bus",
+        "description": "Attendance event queue decoupling IoT ingestion from background processing.",
+        "pipeline_position": 3,
+    },
+    "functionapp": {
+        "stage_name": "Function App",
+        "description": "IoTHubIngress and AttendanceProcessor functions consume events and write to the database.",
+        "pipeline_position": 4,
+    },
+    "postgresql": {
+        "stage_name": "PostgreSQL Database",
+        "description": "Persistent store for employee records, attendance events, and audit logs.",
+        "pipeline_position": 5,
+    },
+    "redis": {
+        "stage_name": "Redis Cache",
+        "description": "Caches session tokens and tenant connection metadata for fast lookups.",
+        "pipeline_position": 6,
+    },
+}
+
+
+def _stage_message(status: str, latency_ms: float | None, error: str | None) -> str:
+    if status == "healthy":
+        if latency_ms is not None:
+            return f"Healthy — {latency_ms:.0f}ms"
+        return "Healthy"
+    if status == "degraded":
+        return f"Degraded — {error or 'partial connectivity'}"
+    if status == "unhealthy":
+        return f"Unhealthy — {error or 'not reachable'}"
+    if status == "not_configured":
+        return "Not configured for this environment"
+    return f"Unknown — {error or 'probe failed'}"
+
+
+def _build_pipeline_stage(stage_id: str, probe_result: dict[str, Any]) -> dict[str, Any]:
+    meta = _PIPELINE_STAGE_META.get(stage_id, {"stage_name": stage_id, "description": "", "pipeline_position": 99})
+    status = probe_result.get("status", "unknown")
+    latency_ms = probe_result.get("latency_ms")
+    error = probe_result.get("error")
+    message = _stage_message(status, latency_ms, error)
+
+    fix: dict[str, Any] | None = None
+    issue_title = ""
+    severity_class = "low"
+
+    if status in ("unhealthy", "degraded"):
+        if stage_id == "postgresql":
+            postgres_state = probe_result.get("postgres_state", "")
+            fix_type = "start_postgres_server" if postgres_state == "stopped" else "restart_postgres_server"
+            fix = build_fix_metadata(
+                fix_type,
+                reason="Database is unreachable — attendance writes and employee auth will fail until the server is recovered.",
+                risk="medium",
+            )
+            issue_title = "Database is unreachable — attendance pipeline is broken"
+            severity_class = "high"
+        elif stage_id == "functionapp":
+            fix = build_fix_metadata(
+                "restart_function_app",
+                reason="The Function App processes attendance events. If stopped, events will pile up in Service Bus unprocessed.",
+                risk="medium",
+            )
+            issue_title = "Function App is not running — attendance events are not being processed"
+            severity_class = "high"
+        elif stage_id == "webapp":
+            fix = build_fix_metadata(
+                "restart_webapp",
+                reason="The web app is in a non-running state. Employees cannot log in or submit attendance events.",
+                risk="low",
+            )
+            issue_title = "Web app is not running — employee access is unavailable"
+            severity_class = "high"
+        elif stage_id == "servicebus":
+            fix = build_fix_metadata(
+                "restart_function_app",
+                reason="Service Bus is degraded — restarting the Function App reconnects its consumers.",
+                risk="medium",
+            )
+            issue_title = "Service Bus is degraded — attendance event processing may be stalled"
+            severity_class = "medium"
+        elif stage_id == "iothub":
+            fix = build_fix_metadata(
+                "restart_function_app",
+                reason="IoT Hub ingestion is failing — restarting the Function App re-establishes the Event Hub consumer.",
+                risk="medium",
+            )
+            issue_title = "IoT Hub is degraded — punch-in/out events may not be received"
+            severity_class = "medium"
+        elif stage_id == "redis":
+            fix = build_fix_metadata(
+                "restart_webapp",
+                reason="Redis is unavailable — session cache misses will cause auth slowdowns. Restarting the web app reconnects the client.",
+                risk="low",
+            )
+            issue_title = "Redis cache is down — auth and caching degraded"
+            severity_class = "low"
+
+    return {
+        "stage_id": stage_id,
+        "stage_name": meta["stage_name"],
+        "description": meta["description"],
+        "pipeline_position": meta["pipeline_position"],
+        "status": status,
+        "latency_ms": latency_ms,
+        "message": message,
+        "issue_title": issue_title,
+        "severity_class": severity_class,
+        "fix": fix,
+    }
+
+
+def _probe_webapp_raw() -> dict[str, Any]:
+    if not WEBAPP_NAME or not AZURE_RESOURCE_GROUP:
+        return {"status": "not_configured"}
+    started = time.perf_counter()
+    try:
+        ensure_azure_cli_login()
+        result = run_azure_cli_json([
+            "webapp", "show",
+            "--resource-group", AZURE_RESOURCE_GROUP,
+            "--name", WEBAPP_NAME,
+            "--query", "{state:state}",
+        ])
+        state = sanitize_text((result or {}).get("state", "")).lower()
+        ms = round((time.perf_counter() - started) * 1000, 2)
+        if state == "running":
+            return {"status": "healthy", "latency_ms": ms}
+        return {"status": "unhealthy", "latency_ms": ms, "error": f"App state: {state or 'unknown'}"}
+    except Exception as exc:
+        return {"status": "unknown", "error": str(exc)}
+
+
+def _probe_iothub_raw() -> dict[str, Any]:
+    if not IOTHUB_NAME or not AZURE_RESOURCE_GROUP:
+        return {"status": "not_configured"}
+    started = time.perf_counter()
+    try:
+        ensure_azure_cli_login()
+        result = run_azure_cli_json([
+            "iot", "hub", "show",
+            "--resource-group", AZURE_RESOURCE_GROUP,
+            "--name", IOTHUB_NAME,
+            "--query", "{state:properties.state}",
+        ])
+        state = sanitize_text((result or {}).get("state", "")).lower()
+        ms = round((time.perf_counter() - started) * 1000, 2)
+        if state == "active":
+            return {"status": "healthy", "latency_ms": ms}
+        return {"status": "degraded", "latency_ms": ms, "error": f"Hub state: {state or 'unknown'}"}
+    except Exception as exc:
+        return {"status": "unknown", "error": str(exc)}
+
+
+def _probe_servicebus_raw() -> dict[str, Any]:
+    if not SERVICEBUS_NAMESPACE_NAME or not AZURE_RESOURCE_GROUP:
+        return {"status": "not_configured"}
+    started = time.perf_counter()
+    try:
+        ensure_azure_cli_login()
+        result = run_azure_cli_json([
+            "servicebus", "namespace", "show",
+            "--resource-group", AZURE_RESOURCE_GROUP,
+            "--name", SERVICEBUS_NAMESPACE_NAME,
+            "--query", "{status:status}",
+        ])
+        sbs_status = sanitize_text((result or {}).get("status", "")).lower()
+        ms = round((time.perf_counter() - started) * 1000, 2)
+        if sbs_status == "active":
+            return {"status": "healthy", "latency_ms": ms}
+        return {"status": "degraded", "latency_ms": ms, "error": f"Namespace status: {sbs_status or 'unknown'}"}
+    except Exception as exc:
+        return {"status": "unknown", "error": str(exc)}
+
+
+def _probe_functionapp_raw() -> dict[str, Any]:
+    if not FUNCTION_APP_NAME or not AZURE_RESOURCE_GROUP:
+        return {"status": "not_configured"}
+    started = time.perf_counter()
+    try:
+        ensure_azure_cli_login()
+        result = run_azure_cli_json([
+            "functionapp", "show",
+            "--resource-group", AZURE_RESOURCE_GROUP,
+            "--name", FUNCTION_APP_NAME,
+            "--query", "{state:state}",
+        ])
+        state = sanitize_text((result or {}).get("state", "")).lower()
+        ms = round((time.perf_counter() - started) * 1000, 2)
+        if state == "running":
+            return {"status": "healthy", "latency_ms": ms}
+        return {"status": "unhealthy", "latency_ms": ms, "error": f"App state: {state or 'unknown'}"}
+    except Exception as exc:
+        return {"status": "unknown", "error": str(exc)}
+
+
+def _probe_postgresql_raw() -> dict[str, Any]:
+    result = check_database_health()
+    postgres_state = ""
+    if result["status"] == "unhealthy" and AZURE_POSTGRES_SERVER_NAME:
+        try:
+            server_info = get_cached_postgres_platform_action("show-server")
+            postgres_state = str((server_info or {}).get("state") or "").lower()
+        except Exception:
+            pass
+    result["postgres_state"] = postgres_state
+    return result
+
+
+def _probe_redis_raw() -> dict[str, Any]:
+    return check_redis_health()
+
+
+def load_pipeline_stages() -> list[dict[str, Any]]:
+    """Concurrently probe all pipeline stages and return structured health objects."""
+    probe_map: dict[str, Any] = {
+        "webapp": _probe_webapp_raw,
+        "iothub": _probe_iothub_raw,
+        "servicebus": _probe_servicebus_raw,
+        "functionapp": _probe_functionapp_raw,
+        "postgresql": _probe_postgresql_raw,
+        "redis": _probe_redis_raw,
+    }
+
+    raw_results: dict[str, dict[str, Any]] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(probe_map)) as executor:
+        future_to_id = {executor.submit(fn): sid for sid, fn in probe_map.items()}
+        done, _ = concurrent.futures.wait(future_to_id, timeout=25)
+        for future in future_to_id:
+            sid = future_to_id[future]
+            if future in done:
+                try:
+                    raw_results[sid] = future.result()
+                except Exception as exc:
+                    raw_results[sid] = {"status": "unknown", "error": str(exc)}
+            else:
+                raw_results[sid] = {"status": "unknown", "error": "probe timed out"}
+
+    stages = [
+        _build_pipeline_stage(sid, raw_results.get(sid, {"status": "unknown", "error": "not probed"}))
+        for sid in probe_map
+    ]
+    stages.sort(key=lambda s: s["pipeline_position"])
+    return stages
+
+
+def analyze_pipeline_with_ai(stages: list[dict[str, Any]]) -> str:
+    """Return a brief narrative diagnosis of the pipeline state using Azure OpenAI."""
+    if not is_ai_error_analysis_configured():
+        return ""
+
+    unhealthy = [s for s in stages if s["status"] in ("unhealthy", "degraded", "unknown")]
+    if not unhealthy:
+        return "All pipeline stages are healthy. No action required."
+
+    system_prompt = (
+        "You are diagnosing a live employee attendance tracking pipeline. "
+        "The pipeline stages are: Web App → IoT Hub → Service Bus → Function App → PostgreSQL, with Redis as a cache. "
+        "Given the health snapshot, return strict JSON with the shape: "
+        '{"narrative": "<2-3 sentence diagnosis explaining which stages are down and the downstream impact on employees>"} '
+        "No markdown. Be specific about how the failure affects employee punch-in/out and data integrity."
+    )
+    stage_snapshot = [
+        {
+            "stage": s["stage_name"],
+            "status": s["status"],
+            "message": s["message"],
+            "issue": s["issue_title"],
+        }
+        for s in stages
+    ]
+    try:
+        result = call_azure_openai_json(system_prompt, {"pipeline_stages": stage_snapshot})
+        return sanitize_text(result.get("narrative", ""))
+    except Exception:
+        return ""
+
+
 def get_mobile_user_from_header(authorization: str | None) -> dict:
     if not authorization:
         log_event(logging.WARNING, "mobile_auth_header_missing")
@@ -2772,6 +3066,85 @@ def admin_policy_deny_fix(request: Request, policy_name: str = Form(...), resour
         return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
     msg = f"Fix for '{policy_name}' on {resource_name} was denied. No action taken."
     return RedirectResponse(f"/admin/policies?msg={urllib_parse.quote_plus(msg)}", status_code=303)
+
+
+# ─── Pipeline Guardian Routes ─────────────────────────────────────────────────
+
+@app.get("/admin/pipeline", response_class=HTMLResponse)
+def admin_pipeline_guardian(request: Request, msg: str = "", error: str = ""):
+    session_admin = require_admin_session(request)
+    if not session_admin:
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    stages: list[dict[str, Any]] = []
+    ai_narrative = ""
+    scan_error = error
+
+    try:
+        stages = load_pipeline_stages()
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="load_pipeline_stages")
+        scan_error = str(exc)
+
+    if stages:
+        try:
+            ai_narrative = analyze_pipeline_with_ai(stages)
+        except Exception:
+            pass
+
+    issues = [s for s in stages if s["status"] in ("unhealthy", "degraded", "unknown") and s["status"] != "not_configured"]
+    stage_counts = {
+        "healthy": sum(1 for s in stages if s["status"] == "healthy"),
+        "unhealthy": sum(1 for s in stages if s["status"] == "unhealthy"),
+        "degraded": sum(1 for s in stages if s["status"] == "degraded"),
+        "unknown": sum(1 for s in stages if s["status"] in ("unknown", "not_configured")),
+    }
+
+    return templates.TemplateResponse(
+        request,
+        "admin_pipeline.html",
+        {
+            "request": request,
+            "admin_email": session_admin["email"],
+            "msg": msg,
+            "error": scan_error,
+            "stages": stages,
+            "issues": issues,
+            "ai_narrative": ai_narrative,
+            "stage_counts": stage_counts,
+        },
+    )
+
+
+@app.post("/admin/pipeline/apply")
+def admin_pipeline_apply_fix(
+    request: Request,
+    fix_type: str = Form(...),
+    stage_id: str = Form(""),
+):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+
+    fix_meta = build_fix_metadata(fix_type)
+    if not fix_meta.get("is_available"):
+        msg = f"{fix_meta.get('action_label', fix_type)} is not enabled for this environment."
+        return RedirectResponse(f"/admin/pipeline?error={urllib_parse.quote_plus(msg)}", status_code=303)
+
+    try:
+        result = apply_error_fix(fix_type)
+        log_event(logging.INFO, "pipeline_fix_applied", fix_type=fix_type, stage_id=stage_id)
+        return RedirectResponse(f"/admin/pipeline?msg={urllib_parse.quote_plus(result)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="apply_pipeline_fix", fix_type=fix_type, stage_id=stage_id)
+        return RedirectResponse(f"/admin/pipeline?error={urllib_parse.quote_plus(str(exc))}", status_code=303)
+
+
+@app.post("/admin/pipeline/dismiss")
+def admin_pipeline_dismiss(request: Request, stage_id: str = Form(""), stage_name: str = Form("")):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+    msg = f"Finding for '{stage_name or stage_id}' dismissed. No action taken."
+    return RedirectResponse(f"/admin/pipeline?msg={urllib_parse.quote_plus(msg)}", status_code=303)
 
 
 @app.post("/admin/errors/apply")
