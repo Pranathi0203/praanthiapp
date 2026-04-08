@@ -66,7 +66,7 @@ LOG_ANALYTICS_WORKSPACE_RESOURCE_ID = os.getenv("LOG_ANALYTICS_WORKSPACE_RESOURC
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
-AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
 ERROR_ANALYSIS_USE_AZURE_OPENAI = os.getenv("ERROR_ANALYSIS_USE_AZURE_OPENAI", "true").lower() == "true"
 ERROR_ANALYSIS_TIMEOUT_SECONDS = int(os.getenv("ERROR_ANALYSIS_TIMEOUT_SECONDS", "45"))
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@pranathi.local").lower()
@@ -1220,6 +1220,14 @@ def apply_error_fix(fix_type: str):
         run_postgres_platform_action("start-server")
         return f"Start requested for {AZURE_POSTGRES_SERVER_NAME}."
     if fix_type == "restart_postgres_server":
+        try:
+            server_info = get_cached_postgres_platform_action("show-server")
+            state = str((server_info or {}).get("state") or "").lower()
+        except Exception:
+            state = ""
+        if state == "stopped":
+            run_postgres_platform_action("start-server")
+            return f"Start requested for {AZURE_POSTGRES_SERVER_NAME} (server was stopped, start used instead of restart)."
         run_postgres_platform_action("restart-server")
         return f"Restart requested for {AZURE_POSTGRES_SERVER_NAME}."
     if fix_type == "restart_function_app":
