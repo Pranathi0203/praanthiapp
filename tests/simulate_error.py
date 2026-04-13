@@ -31,7 +31,9 @@ logging.basicConfig(level=logging.INFO)
 
 def process_attendance_record(record: dict) -> dict:
     """Parse an attendance check-in record. Expects 'employee_id' field."""
-    employee_id = record["employee_id"]  # KeyError if field missing
+    if "employee_id" not in record:
+        raise KeyError("employee_id is missing")
+    employee_id = record["employee_id"]
     org = record.get("org", "unknown")
     return {"employee_id": employee_id, "org": org, "status": "processed"}
 
@@ -41,7 +43,7 @@ def main():
 
     with tracer.start_as_current_span("process_attendance_record") as span:
         try:
-            # Missing required 'employee_id' field — realistic bug
+            # Missing required 'employee_id' field  realistic bug
             record = {
                 "timestamp": "2026-04-13T03:00:00Z",
                 "org": "contoso",
