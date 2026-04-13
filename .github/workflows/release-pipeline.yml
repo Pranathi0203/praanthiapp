@@ -250,6 +250,50 @@ jobs:
           import_role_assignment_if_needed 'module.app.azurerm_role_assignment.webapp_rg_contributor' "$APP_PRINCIPAL_ID"
           import_role_assignment_if_needed 'module.app.azurerm_role_assignment.webapp_staging_rg_contributor' "$STAGING_PRINCIPAL_ID"
 
+      - name: Import existing OpenAI account and policy definitions if needed
+        working-directory: infra/envs/dev
+        run: |
+          import_resource_if_needed() {
+            local address="$1"
+            local resource_id="$2"
+
+            if terraform state show "$address" >/dev/null 2>&1; then
+              echo "$address is already tracked in Terraform state."
+              return 0
+            fi
+
+            if [ -z "$resource_id" ]; then
+              echo "Resource ID for $address not found. Skipping import."
+              return 0
+            fi
+
+            echo "Importing $address into Terraform state."
+            terraform import -lock-timeout=5m "$address" "$resource_id"
+          }
+
+          SUBSCRIPTION_ID="${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+
+          # Import existing Azure OpenAI account (name may differ from what Terraform expects; import lets Terraform destroy+recreate within quota)
+          OPENAI_ID="$(az cognitiveservices account list \
+            --resource-group "${{ vars.RG_NAME }}" \
+            --query "[?kind=='OpenAI'].id | [0]" -o tsv 2>/dev/null || true)"
+          import_resource_if_needed 'module.app.azurerm_cognitive_account.openai' "$OPENAI_ID"
+
+          # Import subscription-scoped policy definitions that already exist
+          for policy_name in \
+            pranathi-acr-admin-disabled \
+            pranathi-storage-no-public-access \
+            pranathi-storage-https-only \
+            pranathi-appservice-https-only \
+            pranathi-appservice-min-tls \
+            pranathi-keyvault-purge-protection \
+            pranathi-keyvault-soft-delete; do
+            POLICY_ID="/subscriptions/${SUBSCRIPTION_ID}/providers/Microsoft.Authorization/policyDefinitions/${policy_name}"
+            if az policy definition show --name "$policy_name" >/dev/null 2>&1; then
+              import_resource_if_needed "module.app.azurerm_policy_definition.security[\"${policy_name}\"]" "$POLICY_ID"
+            fi
+          done
+
       - name: Terraform apply
         working-directory: infra/envs/dev
         run: |
