@@ -388,7 +388,8 @@ jobs:
             update
 
   deploy_dev:
-    needs: [prepare, migrate_dev]
+    needs: [prepare, infra_dev_gate]
+    if: ${{ always() && needs.infra_dev_gate.result == 'success' }}
     runs-on: ubuntu-latest
     environment: dev
     steps:
@@ -636,8 +637,8 @@ jobs:
             update
 
   deploy_qa:
-    needs: [prepare, migrate_qa]
-    if: ${{ inputs.deploy_qa }}
+    needs: [prepare, infra_qa_gate]
+    if: ${{ always() && inputs.deploy_qa && needs.infra_qa_gate.result == 'success' }}
     runs-on: ubuntu-latest
     environment: qa
     steps:
