@@ -69,6 +69,7 @@ AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 GITHUB_DEFAULT_BRANCH = os.getenv("GITHUB_DEFAULT_BRANCH", "main")
+GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", GITHUB_DEFAULT_BRANCH)  # deployed branch, may differ from default
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@pranathi.local").lower()
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me-admin")
 CONTOSO_DOMAIN = os.getenv("CONTOSO_DOMAIN", "contoso.com").lower()
@@ -1091,13 +1092,58 @@ Rules:
 - severity: critical = users cannot use the app, high = intermittent failures, medium = degraded, low = no user impact."""
 
 
+def normalize_repo_file_path(file_path: str) -> str:
+    """Convert an absolute local path to a repo-relative path.
+
+    Strips any leading absolute path prefix up to and including known repo root
+    markers (src/, tests/, functions/, infra/, scripts/, etc.).  Falls back to
+    stripping the longest common prefix with known top-level directories so the
+    GitHub API receives a relative path like 'tests/simulate_error.py'.
+    """
+    if not file_path:
+        return file_path
+    # Already relative
+    if not file_path.startswith("/"):
+        return file_path.lstrip("./")
+    import re as _re
+    # Find the first known top-level directory in the path and return from there
+    match = _re.search(r"(?:^|/)((src|tests|functions|infra|scripts|liquibase|desktop)/.*)", file_path)
+    if match:
+        return match.group(1)
+    # Fallback: strip everything before the last occurrence of a .py/.js/.ts etc.
+    # by finding the shortest suffix that looks like a relative path
+    parts = file_path.lstrip("/").split("/")
+    # Drop parts that look like absolute system path components (Users, home, etc.)
+    for i, part in enumerate(parts):
+        if part in ("src", "tests", "functions", "infra", "scripts", "app", "lib"):
+            return "/".join(parts[i:])
+    # Last resort: just strip the leading slash
+    return file_path.lstrip("/")
+
+
+def github_get_file_on_branch(file_path: str, branch: str) -> tuple[str, str]:
+    """Fetch file content from a specific branch. Returns (content, sha)."""
+    owner, repo = get_github_repo_parts()
+    data = github_api_request(
+        "GET",
+        f"/repos/{owner}/{repo}/contents/{file_path.lstrip('/')}",
+        query={"ref": branch},
+    )
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Unexpected response fetching {file_path} on {branch}")
+    import base64 as _b64
+    content = _b64.b64decode(data["content"]).decode("utf-8")
+    return content, data["sha"]
+
+
 def github_get_snippet(file_path: str, line_number: int, context: int = 20) -> str:
     """Fetch ±context lines around line_number from a file in the GitHub repo.
     Returns an empty string if the file cannot be fetched or GitHub is not configured."""
     if not is_github_dashboard_configured() or not file_path:
         return ""
+    rel_path = normalize_repo_file_path(file_path)
     try:
-        content, _ = github_get_file(file_path)
+        content, _ = github_get_file(rel_path)
         lines = content.splitlines()
         start = max(0, line_number - context - 1)
         end = min(len(lines), line_number + context)
@@ -1159,27 +1205,35 @@ def analyze_errors_with_ai(rows: list[dict[str, Any]]) -> dict[str, dict[str, An
 # ─── GitHub code fix ──────────────────────────────────────────────────────────
 
 def github_get_file(file_path: str) -> tuple[str, str]:
-    """Return (decoded content, blob sha) for a file in the repo."""
+    """Return (decoded content, blob sha) for a file in the repo.
+    Tries GITHUB_DEFAULT_BRANCH first, then GITHUB_BRANCH as fallback."""
+    branches = list(dict.fromkeys([GITHUB_DEFAULT_BRANCH, GITHUB_BRANCH]))  # dedupe, preserve order
     owner, repo = get_github_repo_parts()
-    data = github_api_request(
-        "GET",
-        f"/repos/{owner}/{repo}/contents/{file_path.lstrip('/')}",
-        query={"ref": GITHUB_DEFAULT_BRANCH},
-    )
-    if not isinstance(data, dict):
-        raise RuntimeError(f"Unexpected response fetching {file_path}")
-    import base64 as _b64
-    content = _b64.b64decode(data["content"]).decode("utf-8")
-    return content, data["sha"]
+    last_exc: Exception = RuntimeError("No branches to try")
+    for branch in branches:
+        try:
+            data = github_api_request(
+                "GET",
+                f"/repos/{owner}/{repo}/contents/{file_path.lstrip('/')}",
+                query={"ref": branch},
+            )
+            if not isinstance(data, dict):
+                raise RuntimeError(f"Unexpected response fetching {file_path}")
+            import base64 as _b64
+            content = _b64.b64decode(data["content"]).decode("utf-8")
+            return content, data["sha"]
+        except Exception as exc:
+            last_exc = exc
+    raise last_exc
 
 
 def github_create_branch(branch_name: str) -> None:
-    """Create a new branch off GITHUB_DEFAULT_BRANCH."""
+    """Create a new branch off GITHUB_BRANCH (the deployed branch)."""
     owner, repo = get_github_repo_parts()
-    ref_data = github_api_request("GET", f"/repos/{owner}/{repo}/git/refs/heads/{GITHUB_DEFAULT_BRANCH}")
+    ref_data = github_api_request("GET", f"/repos/{owner}/{repo}/git/refs/heads/{GITHUB_BRANCH}")
     base_sha = (ref_data.get("object") or {}).get("sha", "") if isinstance(ref_data, dict) else ""
     if not base_sha:
-        raise RuntimeError(f"Could not resolve SHA for branch '{GITHUB_DEFAULT_BRANCH}'.")
+        raise RuntimeError(f"Could not resolve SHA for branch '{GITHUB_BRANCH}'.")
     github_api_request(
         "POST",
         f"/repos/{owner}/{repo}/git/refs",
@@ -1210,7 +1264,7 @@ def github_create_pr(title: str, body: str, head_branch: str) -> str:
     data = github_api_request(
         "POST",
         f"/repos/{owner}/{repo}/pulls",
-        payload={"title": title, "body": body, "head": head_branch, "base": GITHUB_DEFAULT_BRANCH},
+        payload={"title": title, "body": body, "head": head_branch, "base": GITHUB_BRANCH},
         expected_statuses=(201,),
     )
     return (data or {}).get("html_url", "")
@@ -1260,7 +1314,16 @@ def create_code_fix_pr(
     error_message: str,
 ) -> str:
     """Fetch file, ask AI to fix it, push to a new branch, open PR. Returns PR URL."""
-    file_content, blob_sha = github_get_file(file_path)
+    file_path = normalize_repo_file_path(file_path)
+    # Try the default branch first; fall back to the currently deployed branch
+    try:
+        file_content, blob_sha = github_get_file(file_path)
+    except Exception:
+        deployed_branch = os.getenv("GITHUB_BRANCH", GITHUB_DEFAULT_BRANCH)
+        if deployed_branch != GITHUB_DEFAULT_BRANCH:
+            file_content, blob_sha = github_get_file_on_branch(file_path, deployed_branch)
+        else:
+            raise
     fix = generate_code_fix(
         file_path,
         file_content,
