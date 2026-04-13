@@ -155,3 +155,18 @@ variable "iothub_data_contributor_principal_id" {
   type    = string
   default = ""
 }
+
+variable "github_repository" {
+  type    = string
+  default = "Pranathi0203/praanthiapp"
+}
+
+variable "admin_email" {
+  type    = string
+  default = "pranymunnangi@gmail.com"
+}
+
+variable "admin_password" {
+  type      = string
+  sensitive = true
+}

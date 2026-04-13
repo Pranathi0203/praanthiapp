@@ -61,7 +61,7 @@
         font-size: 0.85rem;
       }
       .error-meta dt { color: #64748b; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.15rem; }
-      .error-meta dd { margin: 0; font-weight: 600; color: #223041; }
+      .error-meta dd { margin: 0; font-weight: 600; color: #223041; word-break: break-word; }
 
       .diagnosis-grid {
         display: grid;
@@ -80,6 +80,21 @@
       .diag-block h4 { margin: 0 0 0.35rem; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; }
       .diag-block p  { margin: 0; font-size: 0.88rem; color: #334155; line-height: 1.5; }
 
+      .code-location {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.9rem;
+        padding: 0.6rem 0.85rem;
+        border-radius: 8px;
+        background: #0f172a;
+        color: #e2e8f0;
+        font-family: monospace;
+        font-size: 0.83rem;
+      }
+      .code-location a { color: #7dd3fc; text-decoration: none; }
+      .code-location a:hover { text-decoration: underline; }
+
       .fix-block {
         padding: 0.9rem 1rem;
         border-radius: 12px;
@@ -93,10 +108,28 @@
         text-transform: uppercase;
         letter-spacing: 0.06em;
         color: #3b82f6;
-        margin-bottom: 0.4rem;
+        margin: 0 0 0.4rem;
       }
       .fix-block h3 { margin: 0 0 0.3rem; font-size: 0.95rem; color: #1e293b; }
       .fix-block p  { margin: 0; font-size: 0.85rem; color: #475569; line-height: 1.5; }
+
+      .code-fix-block {
+        padding: 0.9rem 1rem;
+        border-radius: 12px;
+        background: linear-gradient(135deg, rgba(16,185,129,0.05), rgba(5,150,105,0.04));
+        border: 1px solid rgba(16,185,129,0.25);
+        margin-bottom: 0.9rem;
+      }
+      .code-fix-label {
+        font-size: 0.7rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #059669;
+        margin: 0 0 0.4rem;
+      }
+      .code-fix-block h3 { margin: 0 0 0.3rem; font-size: 0.95rem; color: #1e293b; }
+      .code-fix-block p  { margin: 0; font-size: 0.85rem; color: #475569; line-height: 1.5; }
 
       .sample-message {
         margin: 0.6rem 0 0.9rem;
@@ -135,6 +168,24 @@
         border-radius: 8px;
         font-size: 0.9rem;
       }
+
+      .status-pills {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        margin-top: 0.6rem;
+      }
+      .pill {
+        font-size: 0.72rem;
+        font-weight: 700;
+        padding: 0.2rem 0.6rem;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+      }
+      .pill-on  { background: rgba(16,185,129,0.12); color: #065f46; }
+      .pill-off { background: rgba(148,163,184,0.15); color: #475569; }
     </style>
   </head>
   <body>
@@ -144,19 +195,28 @@
           <p class="eyebrow">Admin App</p>
           <h1>AI Error Guardian</h1>
           <p>
-            Reads App Insights logs, identifies failures, and suggests fixes.<br />
-            Approve to apply a fix automatically or deny to dismiss.<br />
+            Reads App Insights logs, uses AI to explain what broke and why,
+            and offers to fix it — either by restarting a service or opening a GitHub PR with a code fix.<br />
             Signed in as <strong>{{ admin_email }}</strong>
           </p>
         </div>
         <div class="hero-actions">
-          <a class="icon-btn" href="/admin/errors?minutes={{ minutes }}" title="Refresh scan" aria-label="Refresh scan">&#x21bb;</a>
-          <a class="btn secondary" href="/admin/dashboard">Back to dashboard</a>
+          <a class="icon-btn" href="/admin/errors?minutes={{ minutes }}" title="Refresh" aria-label="Refresh">&#x21bb;</a>
+          <a class="btn secondary" href="/admin/dashboard">Dashboard</a>
           <a class="btn" href="/admin/logout">Logout</a>
         </div>
       </section>
 
-      {% if msg %}<p class="ok banner">{{ msg }}</p>{% endif %}
+      {% if msg %}
+      <p class="ok banner">
+        {% if "http" in msg %}
+          {{ msg.split("http")[0] }}
+          <a href="http{{ msg.split("http")[1] }}" target="_blank" rel="noopener">View PR &#x2197;</a>
+        {% else %}
+          {{ msg }}
+        {% endif %}
+      </p>
+      {% endif %}
       {% if error %}<p class="error banner">{{ error }}</p>{% endif %}
 
       <!-- Scan control -->
@@ -170,11 +230,14 @@
             <button class="btn" type="submit">Scan now</button>
           </div>
         </form>
-        <p class="note-copy" style="margin-top:0.75rem;">
-          Queries AppExceptions, AppTraces, FunctionAppLogs, AzureDiagnostics, and PGSQLServerLogs.
-          Azure OpenAI diagnoses each failure group and recommends a bounded fix.
-          AI diagnosis: <strong>{{ "On" if ai_error_analysis_configured else "Off — check AZURE_OPENAI_* env vars" }}</strong>
-        </p>
+        <div class="status-pills" style="margin-top:0.75rem;">
+          <span class="pill {{ 'pill-on' if ai_configured else 'pill-off' }}">
+            &#x2728; AI diagnosis {{ "on" if ai_configured else "off — set AZURE_OPENAI_* env vars" }}
+          </span>
+          <span class="pill {{ 'pill-on' if github_configured else 'pill-off' }}">
+            &#x26D3; Code fix PR {{ "on" if github_configured else "off — set GITHUB_DASHBOARD_TOKEN" }}
+          </span>
+        </div>
         {% else %}
         <p>
           Configure <code>LOG_ANALYTICS_WORKSPACE_ID</code> or set <code>AZURE_SUBSCRIPTION_ID</code>,
@@ -201,24 +264,12 @@
           <span class="stat-label">Medium</span>
           <strong class="stat-value" style="color:#d97706">{{ issue_overview.counts.medium }}</strong>
         </article>
-        <article class="stat-card">
-          <span class="stat-label">DB fixes</span>
-          <strong class="stat-value">{{ "On" if allow_postgres_restart else "Off" }}</strong>
-        </article>
-        <article class="stat-card">
-          <span class="stat-label">Pipeline fixes</span>
-          <strong class="stat-value">{{ "On" if allow_functionapp_restart else "Off" }}</strong>
-        </article>
-        <article class="stat-card">
-          <span class="stat-label">Webapp fixes</span>
-          <strong class="stat-value">{{ "On" if allow_webapp_restart else "Off" }}</strong>
-        </article>
       </section>
 
       {% if issues %}
 
-      <!-- Top-level headline from the most critical issue -->
-      <section class="card" style="border-left: 4px solid #3b82f6; background: linear-gradient(135deg, rgba(59,130,246,0.04), rgba(99,102,241,0.03));">
+      <!-- Summary headline -->
+      <section class="card" style="border-left: 4px solid #7c3aed; background: linear-gradient(135deg, rgba(124,58,237,0.04), rgba(99,102,241,0.03));">
         <p class="ai-tag">&#x2728; AI summary</p>
         <h2 style="margin:0 0 0.4rem;">{{ issue_overview.headline }}</h2>
         <p style="margin:0; color:#475569;">{{ issue_overview.guidance }}</p>
@@ -230,45 +281,48 @@
 
         <div class="error-top">
           <div>
-            <p class="error-source">{{ issue.fix.component }} &middot; {{ issue.source_table }}</p>
+            <p class="error-source">{{ issue.source_table }}{% if issue.affected_resource %} &middot; {{ issue.affected_resource }}{% endif %}</p>
             <h2 class="error-title">{{ issue.title }}</h2>
           </div>
           <span class="sev-badge sev-{{ issue.severity }}">{{ issue.severity }}</span>
         </div>
 
+        <!-- Key facts -->
         <dl class="error-meta">
           <div>
             <dt>Occurrences</dt>
-            <dd>{{ issue.count }} in {{ minutes }}m</dd>
+            <dd>{{ issue.count }}&#x00D7; in {{ minutes }}m</dd>
           </div>
           <div>
             <dt>First seen</dt>
-            <dd>{{ issue.first_seen or "—" }}</dd>
+            <dd>{{ (issue.first_seen or "—") | truncate(20, True, "") }}</dd>
           </div>
           <div>
             <dt>Last seen</dt>
-            <dd>{{ issue.last_seen or "—" }}</dd>
+            <dd>{{ (issue.last_seen or "—") | truncate(20, True, "") }}</dd>
           </div>
+          {% if issue.affected_resource %}
           <div>
-            <dt>AI score</dt>
-            <dd>{{ issue.severity_score }}/10</dd>
+            <dt>Affected resource</dt>
+            <dd>{{ issue.affected_resource }}</dd>
           </div>
+          {% endif %}
+          {% if issue.where_it_occurred.component %}
           <div>
-            <dt>Suggested fix</dt>
-            <dd>{{ issue.fix.action_label }}</dd>
-          </div>
-          {% if issue.where_it_occurred.resource %}
-          <div>
-            <dt>Resource</dt>
-            <dd>{{ issue.where_it_occurred.resource }}</dd>
+            <dt>Component</dt>
+            <dd>{{ issue.where_it_occurred.component }}</dd>
           </div>
           {% endif %}
         </dl>
 
+        <!-- Plain-English diagnosis -->
+        {% if issue.ai_available %}
+        <p class="ai-tag">&#x2728; AI diagnosis</p>
+        {% endif %}
         <div class="diagnosis-grid">
           <div class="diag-block">
             <h4>What happened</h4>
-            <p>{{ issue.summary }}</p>
+            <p>{{ issue.what_happened }}</p>
           </div>
           <div class="diag-block">
             <h4>Why it occurred</h4>
@@ -276,64 +330,89 @@
           </div>
         </div>
 
+        <!-- Code location -->
+        {% if issue.where_it_occurred.file_path %}
+        <div class="code-location">
+          <span style="color:#94a3b8; font-size:0.75rem; text-transform:uppercase; letter-spacing:0.05em;">Code location</span>
+          {% set fp = issue.where_it_occurred.file_path %}
+          {% set ln = issue.where_it_occurred.line_number %}
+          {% if github_configured %}
+            <a href="https://github.com/{{ github_repository }}/blob/main/{{ fp }}{% if ln and ln != '0' %}#L{{ ln }}{% endif %}" target="_blank" rel="noopener">
+              {{ fp }}{% if ln and ln != '0' %}:{{ ln }}{% endif %}
+            </a>
+          {% else %}
+            <span>{{ fp }}{% if ln and ln != '0' %}:{{ ln }}{% endif %}</span>
+          {% endif %}
+          {% if issue.where_it_occurred.function_name %}
+            <span style="color:#64748b;">in {{ issue.where_it_occurred.function_name }}()</span>
+          {% endif %}
+        </div>
+        {% endif %}
+
+        <!-- Raw error message -->
         {% if issue.example_message %}
         <div class="sample-message">{{ issue.example_message }}</div>
         {% endif %}
 
-        {% if issue.fix_steps %}
-        <!-- AI-generated fix steps -->
-        <div class="fix-block">
-          <p class="fix-block-label">&#x2728; AI-generated fix plan</p>
-          {% for step in issue.fix_steps %}
-          <div style="margin-bottom:0.6rem; padding:0.55rem 0.7rem; border-radius:8px; background:#f1f5f9; font-size:0.83rem;">
-            <span style="font-weight:700; color:#1e40af;">
-              {% if step.type == "az_cli" %}az {{ step.command | join(' ') }}
-              {% elif step.type == "sql" %}SQL: {{ step.query }}
-              {% elif step.type == "arm_patch" %}ARM PATCH {{ step.resource_id }}
-              {% elif step.type == "redis_flush" %}Redis FLUSHDB
-              {% elif step.type == "iot_reconnect" %}IoT client reconnect
-              {% else %}{{ step.type }}{% endif %}
-            </span>
-            <span style="color:#475569; margin-left:0.5rem;">— {{ step.description }}</span>
-          </div>
-          {% endfor %}
+        <!-- Fix section -->
+        {% if issue.ai_fix.is_code_change and ai_configured and github_configured %}
+        <!-- AI code fix via GitHub PR -->
+        <div class="code-fix-block">
+          <p class="code-fix-label">&#x26D3; AI code fix</p>
+          <h3>Open a fix PR on GitHub</h3>
+          <p>
+            AI will read <strong>{{ issue.where_it_occurred.file_path }}</strong> from your repo,
+            generate a minimal code fix at line {{ issue.where_it_occurred.line_number }},
+            and open a pull request for your review.<br />
+            <strong>Fix:</strong> {{ issue.ai_fix.description }}
+          </p>
         </div>
         <div class="issue-actions">
-          <form method="post" action="/admin/errors/apply" class="inline-form">
-            <input type="hidden" name="minutes" value="{{ minutes }}" />
-            <input type="hidden" name="fix_steps_json" value="{{ issue.fix_steps | tojson }}" />
-            <button class="btn" type="submit">Accept and apply fix</button>
+          <form method="post" action="/admin/errors/create-fix-pr" class="inline-form">
+            <input type="hidden" name="minutes"        value="{{ minutes }}" />
+            <input type="hidden" name="issue_id"       value="{{ issue.id }}" />
+            <input type="hidden" name="file_path"      value="{{ issue.where_it_occurred.file_path }}" />
+            <input type="hidden" name="line_number"    value="{{ issue.where_it_occurred.line_number or 0 }}" />
+            <input type="hidden" name="what_happened"  value="{{ issue.what_happened }}" />
+            <input type="hidden" name="why_it_occurred" value="{{ issue.why_it_occurred }}" />
+            <input type="hidden" name="fix_description" value="{{ issue.ai_fix.description }}" />
+            <input type="hidden" name="error_message"  value="{{ issue.example_message }}" />
+            <button class="btn" type="submit">Accept — create fix PR</button>
           </form>
           <form method="post" action="/admin/errors/deny" class="inline-form">
-            <input type="hidden" name="minutes" value="{{ minutes }}" />
+            <input type="hidden" name="minutes"   value="{{ minutes }}" />
             <input type="hidden" name="fix_label" value="{{ issue.title }}" />
-            <button class="btn secondary" type="submit">Deny fix</button>
+            <button class="btn secondary" type="submit">Deny</button>
           </form>
         </div>
+
         {% elif issue.fix.fix_type != "manual_investigation" %}
-        <!-- Fallback fix when AI didn't generate steps -->
+        <!-- Service-level fix (restart etc.) -->
         <div class="fix-block">
           <p class="fix-block-label">&#x1F527; Suggested fix</p>
           <h3>{{ issue.fix.action_label }}</h3>
-          <p>{{ issue.fix.reason }}</p>
+          <p>{{ issue.ai_fix.description }}</p>
           {% if not issue.fix.is_available %}
-          <p style="margin-top:0.4rem; color:#dc2626; font-size:0.82rem;">Fix not enabled (<code>ALLOW_*</code> flag is off).</p>
+          <p style="margin-top:0.4rem; color:#dc2626; font-size:0.82rem;">
+            Fix not enabled — set the <code>ALLOW_*</code> flag to turn this on.
+          </p>
           {% endif %}
         </div>
         <div class="issue-actions">
           {% if issue.fix.is_available %}
           <form method="post" action="/admin/errors/apply" class="inline-form">
-            <input type="hidden" name="minutes" value="{{ minutes }}" />
+            <input type="hidden" name="minutes"  value="{{ minutes }}" />
             <input type="hidden" name="fix_type" value="{{ issue.fix.fix_type }}" />
             <button class="btn" type="submit">Accept and apply fix</button>
           </form>
           {% endif %}
           <form method="post" action="/admin/errors/deny" class="inline-form">
-            <input type="hidden" name="minutes" value="{{ minutes }}" />
+            <input type="hidden" name="minutes"   value="{{ minutes }}" />
             <input type="hidden" name="fix_label" value="{{ issue.fix.action_label }}" />
-            <button class="btn secondary" type="submit">Deny fix</button>
+            <button class="btn secondary" type="submit">Deny</button>
           </form>
         </div>
+
         {% else %}
         <span class="chip chip-muted" style="margin-top:0.75rem; display:inline-flex;">Manual review required</span>
         {% endif %}

@@ -102,7 +102,11 @@ locals {
     "AZURE_OPENAI_ENDPOINT"               = azurerm_cognitive_account.openai.endpoint
     "AZURE_OPENAI_DEPLOYMENT"             = var.azure_openai_deployment_name
     "AZURE_OPENAI_API_KEY"                = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.azure_openai_api_key.versionless_id})"
-    "ERROR_ANALYSIS_USE_AZURE_OPENAI"     = var.azure_openai_deployment_name != "" ? "true" : "false"
+    "AZURE_OPENAI_API_VERSION"            = "2024-12-01-preview"
+    "LOG_ANALYTICS_WORKSPACE_ID"          = azurerm_log_analytics_workspace.observability.workspace_id
+    "APP_SECRET"                          = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.app_secret.versionless_id})"
+    "ADMIN_EMAIL"                         = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.admin_email.versionless_id})"
+    "ADMIN_PASSWORD"                      = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.admin_password.versionless_id})"
   }
   optional_app_settings = var.contoso_device_connection_string != "" ? {
     "CONTOSO_DEVICE_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_device_connection_string[0].versionless_id})"
@@ -145,7 +149,7 @@ locals {
   )
   optional_github_dashboard_settings = var.github_dashboard_token != "" ? {
     "GITHUB_DASHBOARD_TOKEN" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.github_dashboard_token[0].versionless_id})"
-    "GITHUB_REPOSITORY"      = "Pranathi0203/praanthiapp"
+    "GITHUB_REPOSITORY"      = var.github_repository
   } : {}
   function_app_settings = merge(
     {
@@ -1153,6 +1157,32 @@ resource "azurerm_key_vault_secret" "github_dashboard_token" {
   count        = var.github_dashboard_token != "" ? 1 : 0
   name         = "github-dashboard-token"
   value        = var.github_dashboard_token
+  key_vault_id = azurerm_key_vault.app.id
+  depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
+}
+
+resource "random_password" "app_secret" {
+  length  = 64
+  special = false
+}
+
+resource "azurerm_key_vault_secret" "app_secret" {
+  name         = "app-secret"
+  value        = random_password.app_secret.result
+  key_vault_id = azurerm_key_vault.app.id
+  depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
+}
+
+resource "azurerm_key_vault_secret" "admin_email" {
+  name         = "admin-email"
+  value        = var.admin_email
+  key_vault_id = azurerm_key_vault.app.id
+  depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
+}
+
+resource "azurerm_key_vault_secret" "admin_password" {
+  name         = "admin-password"
+  value        = var.admin_password
   key_vault_id = azurerm_key_vault.app.id
   depends_on   = [azurerm_key_vault_access_policy.terraform_runner]
 }

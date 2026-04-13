@@ -66,10 +66,9 @@ LOG_ANALYTICS_WORKSPACE_ID = os.getenv("LOG_ANALYTICS_WORKSPACE_ID", "")
 LOG_ANALYTICS_WORKSPACE_RESOURCE_ID = os.getenv("LOG_ANALYTICS_WORKSPACE_RESOURCE_ID", "")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
-AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
-AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
-ERROR_ANALYSIS_USE_AZURE_OPENAI = os.getenv("ERROR_ANALYSIS_USE_AZURE_OPENAI", "true").lower() == "true"
-ERROR_ANALYSIS_TIMEOUT_SECONDS = int(os.getenv("ERROR_ANALYSIS_TIMEOUT_SECONDS", "45"))
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+GITHUB_DEFAULT_BRANCH = os.getenv("GITHUB_DEFAULT_BRANCH", "main")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@pranathi.local").lower()
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me-admin")
 CONTOSO_DOMAIN = os.getenv("CONTOSO_DOMAIN", "contoso.com").lower()
@@ -462,14 +461,6 @@ def is_error_operations_configured() -> bool:
     return has_workspace or has_app_insights_lookup
 
 
-def is_ai_error_analysis_configured() -> bool:
-    return bool(
-        ERROR_ANALYSIS_USE_AZURE_OPENAI
-        and AZURE_OPENAI_ENDPOINT
-        and AZURE_OPENAI_API_KEY
-        and AZURE_OPENAI_DEPLOYMENT
-    )
-
 
 def get_workspace_context() -> dict[str, str]:
     if LOG_ANALYTICS_WORKSPACE_ID:
@@ -834,35 +825,6 @@ def build_resource_catalog() -> list[dict[str, str]]:
     )
 
 
-def call_azure_openai_json(system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
-    if not is_ai_error_analysis_configured():
-        raise RuntimeError(
-            "Azure OpenAI error analysis is not configured. Set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, and AZURE_OPENAI_DEPLOYMENT."
-        )
-
-    url = (
-        f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{urllib_parse.quote(AZURE_OPENAI_DEPLOYMENT, safe='')}"
-        f"/chat/completions?api-version={urllib_parse.quote(AZURE_OPENAI_API_VERSION, safe='')}"
-    )
-    payload = {
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json_dumps_compact(user_payload)},
-        ],
-        "temperature": 0.1,
-        "max_completion_tokens": 3000,
-    }
-    response = post_json_with_headers(
-        url,
-        {"api-key": AZURE_OPENAI_API_KEY, "Content-Type": "application/json"},
-        payload,
-        timeout=ERROR_ANALYSIS_TIMEOUT_SECONDS,
-    )
-    choices = response.get("choices", [])
-    if not choices:
-        raise RuntimeError("Azure OpenAI returned no choices for admin error analysis.")
-    message = (choices[0] or {}).get("message", {})
-    return parse_json_response_text(message.get("content", ""))
 
 
 def fallback_issue_analysis(row: dict[str, Any], fix: dict[str, Any]) -> dict[str, Any]:
@@ -900,186 +862,6 @@ def fallback_issue_analysis(row: dict[str, Any], fix: dict[str, Any]) -> dict[st
     }
 
 
-def build_infra_context() -> dict[str, Any]:
-    """Return a snapshot of live infrastructure state for the AI to reason about."""
-    return {
-        "subscription_id": AZURE_SUBSCRIPTION_ID,
-        "resource_group": AZURE_RESOURCE_GROUP,
-        "resources": {
-            "webapp": {"name": WEBAPP_NAME, "type": "Microsoft.Web/sites"},
-            "function_app": {"name": FUNCTION_APP_NAME, "type": "Microsoft.Web/sites"},
-            "postgres": {"name": AZURE_POSTGRES_SERVER_NAME, "type": "Microsoft.DBforPostgreSQL/flexibleServers"},
-            "iothub": {"name": IOTHUB_NAME, "type": "Microsoft.Devices/IotHubs"},
-            "servicebus": {"name": SERVICEBUS_NAMESPACE_NAME, "type": "Microsoft.ServiceBus/namespaces"},
-            "redis": {"name": "Redis Cache", "url_configured": bool(REDIS_URL)},
-            "app_insights": {"name": APPLICATION_INSIGHTS_NAME, "type": "Microsoft.Insights/components"},
-        },
-        "capabilities": {
-            "az_cli_available": True,
-            "postgres_direct_access": bool(DATABASE_URL or POSTGRES_ADMIN_URL),
-            "redis_access": bool(REDIS_URL),
-            "iot_clients_cached": list(_tenant_iot_clients.keys()),
-            "webapp_restart_enabled": ALLOW_WEBAPP_RESTART,
-            "functionapp_restart_enabled": ALLOW_FUNCTIONAPP_RESTART,
-            "postgres_restart_enabled": ALLOW_POSTGRES_RESTART,
-        },
-    }
-
-
-def analyze_error_rows_with_ai(rows: list[dict[str, Any]], minutes: int) -> dict[str, dict[str, Any]]:
-    issue_payload = [
-        {
-            "issue_id": f"err-{i}",
-            "source_table": sanitize_text(row.get("SourceTable")),
-            "error_type": sanitize_text(row.get("ErrorType")),
-            "error_key": sanitize_text(row.get("ErrorKey")),
-            "occurrences": int(row.get("Count", 0) or 0),
-            "first_seen": str(row.get("FirstSeen", "") or ""),
-            "last_seen": str(row.get("LastSeen", "") or ""),
-            "example_message": sanitize_text(row.get("ExampleMessage")),
-            "example_details": sanitize_text(row.get("ExampleDetails")),
-            "resource_id": sanitize_text(row.get("ExampleResourceId")),
-        }
-        for i, row in enumerate(rows, start=1)
-    ]
-
-    system_prompt = """You are an expert SRE with full access to a live Azure environment. \
-Diagnose each error and generate the exact fix commands to resolve it.
-
-APPLICATION: Multi-tenant employee attendance tracking system.
-PIPELINE: Employee Client → FastAPI Web App (Python/Azure App Service) → IoT Hub (AMQP) \
-→ Event Hub → Azure Function IoTHubIngress → Service Bus Queue \
-→ Azure Function AttendanceProcessor → PostgreSQL (attendance records).
-Redis caches session tokens and IoT connection strings.
-
-EXECUTABLE FIX STEP TYPES — use these exactly:
-  {"type": "az_cli", "command": ["webapp", "restart", "--resource-group", "...", "--name", "..."], "description": "..."}
-  {"type": "az_cli", "command": ["functionapp", "restart", "--resource-group", "...", "--name", "..."], "description": "..."}
-  {"type": "az_cli", "command": ["postgres", "flexible-server", "start", "--resource-group", "...", "--name", "..."], "description": "..."}
-  {"type": "az_cli", "command": ["postgres", "flexible-server", "restart", "--resource-group", "...", "--name", "..."], "description": "..."}
-  {"type": "sql", "db": "admin", "query": "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state='idle' AND query_start < now() - interval '5 minutes'", "description": "..."}
-  {"type": "sql", "db": "admin", "query": "VACUUM ANALYZE attendance_events", "description": "..."}
-  {"type": "arm_patch", "resource_id": "/subscriptions/.../providers/...", "api_version": "...", "body": {...}, "description": "..."}
-  {"type": "redis_flush", "description": "Flush Redis cache to clear stale sessions"}
-  {"type": "iot_reconnect", "description": "Reset IoT device client connections"}
-
-RULES:
-- Use real resource names from the infra_context provided.
-- For az_cli steps, use the exact resource group and resource names from infra_context.
-- Only generate steps that are safe, targeted, and reversible.
-- Do not generate steps that delete resources, drop tables, or modify access control.
-- Multiple steps are allowed if the fix requires them (e.g. kill connections then vacuum).
-- If no automated fix is safe, set fix_steps to [] and explain in why_it_occurred.
-- Severity: critical=employees cannot punch in/out, high=intermittent failures, medium=degraded, low=no user impact.
-
-Return strict JSON, no markdown:
-{"issues": [{"issue_id": "...", "title": "...", "summary": "...", "severity_label": "critical|high|medium|low", \
-"severity_score": 8, "why_it_occurred": "...", \
-"where_it_occurred": {"component": "...", "file_path": "", "line_number": "", "resource": "..."}, \
-"fix_steps": [{"type": "...", ...}], \
-"affected_resources": [{"name": "...", "kind": "...", "id": "..."}]}]}"""
-
-    response = call_azure_openai_json(
-        system_prompt,
-        {
-            "window_minutes": minutes,
-            "infra_context": build_infra_context(),
-            "issues": issue_payload,
-        },
-    )
-    return {
-        sanitize_text(item.get("issue_id")): item
-        for item in response.get("issues", [])
-        if isinstance(item, dict) and sanitize_text(item.get("issue_id"))
-    }
-
-
-# ─── Agentic fix execution ────────────────────────────────────────────────────
-
-_SAFE_AZ_CLI_VERBS = {
-    ("webapp", "restart"), ("webapp", "start"), ("webapp", "stop"),
-    ("functionapp", "restart"), ("functionapp", "start"), ("functionapp", "stop"),
-    ("postgres", "flexible-server", "restart"),
-    ("postgres", "flexible-server", "start"),
-    ("postgres", "flexible-server", "stop"),
-    ("iot", "hub", "restart"),
-}
-
-
-def _validate_az_cli_step(command: list[str]) -> None:
-    verb = tuple(command[:3]) if len(command) >= 3 else tuple(command[:2])
-    short = tuple(command[:2])
-    if verb not in _SAFE_AZ_CLI_VERBS and short not in _SAFE_AZ_CLI_VERBS:
-        raise RuntimeError(
-            f"az CLI command '{' '.join(command[:3])}' is not on the approved list. "
-            "Only restart/start/stop operations are allowed."
-        )
-
-
-def execute_fix_step(step: dict[str, Any]) -> str:
-    step_type = sanitize_text(step.get("type", ""))
-
-    if step_type == "az_cli":
-        command = step.get("command", [])
-        if not isinstance(command, list) or not command:
-            raise RuntimeError("az_cli step must include a non-empty 'command' list.")
-        _validate_az_cli_step(command)
-        ensure_azure_cli_login()
-        result = run_azure_cli_json(command)
-        return step.get("description") or f"az {' '.join(command)} completed."
-
-    if step_type == "sql":
-        query = sanitize_text(step.get("query", ""))
-        if not query:
-            raise RuntimeError("sql step must include a 'query'.")
-        db_url = get_admin_db_url()
-        with get_conn(db_url, autocommit=True) as conn:
-            with conn.cursor() as cur:
-                cur.execute(query)
-                try:
-                    rows = cur.fetchall()
-                    result_note = f"{len(rows)} row(s) affected"
-                except Exception:
-                    result_note = "executed"
-        return f"{step.get('description') or 'SQL executed'} — {result_note}."
-
-    if step_type == "arm_patch":
-        resource_id = sanitize_text(step.get("resource_id", ""))
-        api_version = sanitize_text(step.get("api_version", ""))
-        body = step.get("body")
-        if not resource_id or not api_version or not isinstance(body, dict):
-            raise RuntimeError("arm_patch step requires resource_id, api_version, and body.")
-        if AZURE_SUBSCRIPTION_ID and f"/subscriptions/{AZURE_SUBSCRIPTION_ID}/" not in resource_id:
-            raise RuntimeError("arm_patch resource_id is outside the configured subscription.")
-        token = run_azure_cli_access_token("https://management.azure.com/")
-        url = f"https://management.azure.com{resource_id}?api-version={api_version}"
-        req = urllib_request.Request(
-            url,
-            data=json.dumps(body).encode("utf-8"),
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            method="PATCH",
-        )
-        try:
-            with urllib_request.urlopen(req, timeout=30) as resp:
-                resp.read()
-        except urllib_error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(f"ARM PATCH failed: HTTP {exc.code} — {detail}") from exc
-        return f"{step.get('description') or 'ARM PATCH applied'} on {resource_id.split('/')[-1]}."
-
-    if step_type == "redis_flush":
-        client = get_redis_client()
-        if client is None:
-            raise RuntimeError("Redis is not configured.")
-        client.flushdb()
-        return step.get("description") or "Redis cache flushed."
-
-    if step_type == "iot_reconnect":
-        count = len(_tenant_iot_clients)
-        _tenant_iot_clients.clear()
-        return (step.get("description") or "IoT clients reset") + f" ({count} connection(s) cleared)."
-
-    raise RuntimeError(f"Unknown fix step type: '{step_type}'")
 
 
 def classify_error_fix(source_table: str, error_type: str, message: str) -> dict[str, Any]:
@@ -1237,6 +1019,234 @@ def build_issue_overview(issues: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+# ─── Azure OpenAI ─────────────────────────────────────────────────────────────
+
+def is_ai_configured() -> bool:
+    return bool(AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY and AZURE_OPENAI_DEPLOYMENT)
+
+
+def call_azure_openai(system_prompt: str, user_message: str) -> dict[str, Any]:
+    url = (
+        f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/"
+        f"{urllib_parse.quote(AZURE_OPENAI_DEPLOYMENT, safe='')}"
+        f"/chat/completions?api-version={urllib_parse.quote(AZURE_OPENAI_API_VERSION, safe='')}"
+    )
+    payload = {
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        "temperature": 0.1,
+        "max_completion_tokens": 4000,
+        "response_format": {"type": "json_object"},
+    }
+    response = post_json_with_headers(
+        url,
+        {"api-key": AZURE_OPENAI_API_KEY, "Content-Type": "application/json"},
+        payload,
+        timeout=60,
+    )
+    choices = response.get("choices") or []
+    if not choices:
+        raise RuntimeError("Azure OpenAI returned no choices.")
+    return parse_json_response_text((choices[0].get("message") or {}).get("content", ""))
+
+
+_AI_ANALYSIS_SYSTEM_PROMPT = """\
+You are an expert software engineer analyzing Azure App Insights error logs.
+
+Explain each error in plain, simple English — as if telling a developer what broke and why.
+No jargon. No Azure-specific terms unless necessary. Be concise.
+
+Return JSON exactly matching this schema:
+{
+  "issues": [
+    {
+      "issue_id": "err-N",
+      "title": "Short plain-English title (max 10 words)",
+      "what_happened": "One sentence: what broke, in simple terms",
+      "why_it_occurred": "One sentence: the root cause",
+      "affected_resource": "The specific service, resource, or component that failed",
+      "severity": "critical|high|medium|low",
+      "code_location": {
+        "file_path": "",
+        "line_number": 0,
+        "function_name": ""
+      },
+      "suggested_fix": {
+        "description": "Plain English: what to change to fix this",
+        "is_code_change": false,
+        "fix_type": "code_change|restart_service|config_change|manual_investigation"
+      }
+    }
+  ]
+}
+
+Rules:
+- Simple words. "The database ran out of connections" not "Connection pool exhaustion occurred".
+- code_location.file_path must come from the error stack trace only — never guess.
+- suggested_fix.is_code_change = true only when you have a file_path from the stack trace and a specific line-level code change can fix the error.
+- severity: critical = users cannot use the app, high = intermittent failures, medium = degraded, low = no user impact."""
+
+
+def analyze_errors_with_ai(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    if not rows or not is_ai_configured():
+        return {}
+    issues_payload = [
+        {
+            "issue_id": f"err-{i}",
+            "source": row.get("SourceTable", ""),
+            "error_type": row.get("ErrorType", ""),
+            "message": sanitize_text(row.get("ExampleMessage", "")),
+            "details": sanitize_text(row.get("ExampleDetails", "")),
+            "occurrences": int(row.get("Count", 0) or 0),
+            "first_seen": str(row.get("FirstSeen", "") or ""),
+            "last_seen": str(row.get("LastSeen", "") or ""),
+        }
+        for i, row in enumerate(rows, start=1)
+    ]
+    result = call_azure_openai(_AI_ANALYSIS_SYSTEM_PROMPT, json_dumps_compact({"issues": issues_payload}))
+    return {
+        sanitize_text(item.get("issue_id")): item
+        for item in (result.get("issues") or [])
+        if isinstance(item, dict) and item.get("issue_id")
+    }
+
+
+# ─── GitHub code fix ──────────────────────────────────────────────────────────
+
+def github_get_file(file_path: str) -> tuple[str, str]:
+    """Return (decoded content, blob sha) for a file in the repo."""
+    owner, repo = get_github_repo_parts()
+    data = github_api_request(
+        "GET",
+        f"/repos/{owner}/{repo}/contents/{file_path.lstrip('/')}",
+        query={"ref": GITHUB_DEFAULT_BRANCH},
+    )
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Unexpected response fetching {file_path}")
+    import base64 as _b64
+    content = _b64.b64decode(data["content"]).decode("utf-8")
+    return content, data["sha"]
+
+
+def github_create_branch(branch_name: str) -> None:
+    """Create a new branch off GITHUB_DEFAULT_BRANCH."""
+    owner, repo = get_github_repo_parts()
+    ref_data = github_api_request("GET", f"/repos/{owner}/{repo}/git/refs/heads/{GITHUB_DEFAULT_BRANCH}")
+    base_sha = (ref_data.get("object") or {}).get("sha", "") if isinstance(ref_data, dict) else ""
+    if not base_sha:
+        raise RuntimeError(f"Could not resolve SHA for branch '{GITHUB_DEFAULT_BRANCH}'.")
+    github_api_request(
+        "POST",
+        f"/repos/{owner}/{repo}/git/refs",
+        payload={"ref": f"refs/heads/{branch_name}", "sha": base_sha},
+        expected_statuses=(201,),
+    )
+
+
+def github_update_file(file_path: str, new_content: str, blob_sha: str, branch_name: str, commit_message: str) -> None:
+    import base64 as _b64
+    owner, repo = get_github_repo_parts()
+    github_api_request(
+        "PUT",
+        f"/repos/{owner}/{repo}/contents/{file_path.lstrip('/')}",
+        payload={
+            "message": commit_message,
+            "content": _b64.b64encode(new_content.encode("utf-8")).decode("ascii"),
+            "sha": blob_sha,
+            "branch": branch_name,
+        },
+        expected_statuses=(200, 201),
+    )
+
+
+def github_create_pr(title: str, body: str, head_branch: str) -> str:
+    """Create a PR and return its HTML URL."""
+    owner, repo = get_github_repo_parts()
+    data = github_api_request(
+        "POST",
+        f"/repos/{owner}/{repo}/pulls",
+        payload={"title": title, "body": body, "head": head_branch, "base": GITHUB_DEFAULT_BRANCH},
+        expected_statuses=(201,),
+    )
+    return (data or {}).get("html_url", "")
+
+
+_CODE_FIX_SYSTEM_PROMPT = """\
+You are fixing a specific bug in a source file.
+
+Generate the minimal, targeted fix — the smallest possible change to resolve the specific error.
+
+Return JSON exactly:
+{
+  "fixed_content": "complete fixed file content as a string",
+  "pr_title": "Fix: <short description under 60 chars>",
+  "pr_body": "## What this fixes\\n<one paragraph>\\n\\n## Change made\\n<one paragraph>",
+  "change_summary": "one-line description of the exact change made"
+}
+
+Rules:
+- Make the SMALLEST possible change. Do not refactor or improve unrelated code.
+- Do not change function signatures, public APIs, or imports unless that is the fix.
+- If you cannot safely generate a fix, return fixed_content as an empty string and explain in change_summary."""
+
+
+def generate_code_fix(file_path: str, file_content: str, error_context: dict[str, Any]) -> dict[str, Any]:
+    user_message = json_dumps_compact({
+        "file_path": file_path,
+        "error": {
+            "what_happened": error_context.get("what_happened", ""),
+            "why_it_occurred": error_context.get("why_it_occurred", ""),
+            "line_number": error_context.get("line_number", 0),
+            "error_message": error_context.get("error_message", ""),
+            "fix_description": error_context.get("fix_description", ""),
+        },
+        "file_content": file_content,
+    })
+    return call_azure_openai(_CODE_FIX_SYSTEM_PROMPT, user_message)
+
+
+def create_code_fix_pr(
+    issue_id: str,
+    file_path: str,
+    line_number: int,
+    what_happened: str,
+    why_it_occurred: str,
+    fix_description: str,
+    error_message: str,
+) -> str:
+    """Fetch file, ask AI to fix it, push to a new branch, open PR. Returns PR URL."""
+    file_content, blob_sha = github_get_file(file_path)
+    fix = generate_code_fix(
+        file_path,
+        file_content,
+        {
+            "what_happened": what_happened,
+            "why_it_occurred": why_it_occurred,
+            "line_number": line_number,
+            "error_message": error_message,
+            "fix_description": fix_description,
+        },
+    )
+    fixed_content = fix.get("fixed_content", "")
+    if not fixed_content:
+        raise RuntimeError(f"AI could not generate a safe fix: {fix.get('change_summary', 'no reason given')}")
+
+    import re as _re
+    safe_id = _re.sub(r"[^a-z0-9-]", "-", issue_id.lower())
+    branch_name = f"ai-fix/{safe_id}-{int(datetime.now(timezone.utc).timestamp())}"
+    github_create_branch(branch_name)
+    commit_msg = fix.get("change_summary") or f"Fix {issue_id}: {fix_description[:60]}"
+    github_update_file(file_path, fixed_content, blob_sha, branch_name, commit_msg)
+    pr_url = github_create_pr(
+        title=fix.get("pr_title") or f"Fix: {fix_description[:60]}",
+        body=fix.get("pr_body") or f"Automated fix for `{file_path}` line {line_number}.\n\n{fix_description}",
+        head_branch=branch_name,
+    )
+    return pr_url
+
+
 def load_recent_error_operations(minutes: int = 60, limit: int = 12) -> list[dict[str, Any]]:
     workspace = get_workspace_context()
     query = """
@@ -1251,13 +1261,14 @@ def load_recent_error_operations(minutes: int = 60, limit: int = 12) -> list[dic
 """.format(union_query=build_error_union_query(minutes), limit=max(1, min(limit, 50)))
 
     rows = query_log_analytics(workspace["workspace_id"], query)
-    ai_analysis_by_id: dict[str, dict[str, Any]] = {}
-    if rows and is_ai_error_analysis_configured():
+
+    # AI diagnosis (best-effort — falls back to rules if AI not configured or fails)
+    ai_by_id: dict[str, dict[str, Any]] = {}
+    if rows:
         try:
-            ai_analysis_by_id = analyze_error_rows_with_ai(rows, minutes)
+            ai_by_id = analyze_errors_with_ai(rows)
         except Exception as exc:
-            logger.warning("Azure OpenAI error analysis failed, falling back to rules: %s", exc)
-            record_exception_to_telemetry(exc, action="ai_error_analysis")
+            logger.warning("AI error analysis failed, using rule-based fallback: %s", exc)
 
     items = []
     for index, row in enumerate(rows, start=1):
@@ -1266,42 +1277,29 @@ def load_recent_error_operations(minutes: int = 60, limit: int = 12) -> list[dic
         error_type = str(row.get("ErrorType", ""))
         message = str(row.get("ExampleMessage", ""))
         count = int(row.get("Count", 0) or 0)
-        fallback_fix = classify_error_fix(source_table, error_type, message)
-        analysis = ai_analysis_by_id.get(issue_id, fallback_issue_analysis(row, fallback_fix))
-        recommended_fix_type = sanitize_text(analysis.get("recommended_fix_type")) or fallback_fix["fix_type"]
-        fix = build_fix_metadata(
-            recommended_fix_type,
-            reason=sanitize_text(analysis.get("why_it_occurred")) or fallback_fix["reason"],
-            risk="medium",
-        )
+        fix = classify_error_fix(source_table, error_type, message)
+        ai = ai_by_id.get(issue_id, {})
 
-        title = sanitize_text(analysis.get("title")) or describe_issue_title(source_table, error_type, message, fix)
-        summary = sanitize_text(analysis.get("summary")) or describe_issue_summary(source_table, error_type, message, fix)
-        example_resource_id = str(row.get("ExampleResourceId", "") or "")
-        ai_resources = analysis.get("affected_resources", [])
-        affected_resources = [resource for resource in fix.get("resources", []) if resource.get("name")] + (
-            ai_resources if isinstance(ai_resources, list) else []
-        )
-        if example_resource_id and all((resource.get("id") or "") != example_resource_id for resource in affected_resources):
-            affected_resources.append(
-                {
-                    "name": resource_name_from_id(example_resource_id),
-                    "kind": "telemetry",
-                    "id": example_resource_id,
-                }
-            )
-        affected_resources = dedupe_resources(affected_resources)
-
-        severity = sanitize_text(analysis.get("severity_label")).lower() or infer_error_severity(source_table, message, count)
-        if severity not in {"critical", "high", "medium", "low"}:
-            severity = infer_error_severity(source_table, message, count)
-        location = analysis.get("where_it_occurred", {}) if isinstance(analysis.get("where_it_occurred"), dict) else {}
-        file_path = normalize_repo_path(str(location.get("file_path", "") or ""))
-        line_number = sanitize_text(location.get("line_number", ""))
-        if not file_path or not line_number:
+        # Code location: prefer AI-extracted (from stack trace analysis), fall back to regex
+        ai_loc = ai.get("code_location") or {}
+        file_path = sanitize_text(ai_loc.get("file_path", "")) or ""
+        line_number = str(ai_loc.get("line_number") or "")
+        function_name = sanitize_text(ai_loc.get("function_name", ""))
+        if not file_path or not line_number or line_number == "0":
             fallback_file, fallback_line = extract_code_location(str(row.get("ExampleDetails", "")))
             file_path = file_path or fallback_file
-            line_number = line_number or fallback_line
+            line_number = line_number if (line_number and line_number != "0") else fallback_line
+
+        severity = sanitize_text(ai.get("severity", "")).lower()
+        if severity not in {"critical", "high", "medium", "low"}:
+            severity = infer_error_severity(source_table, message, count)
+
+        ai_fix = ai.get("suggested_fix") or {}
+        example_resource_id = str(row.get("ExampleResourceId", "") or "")
+        affected_resources = [r for r in fix.get("resources", []) if r.get("name")]
+        if example_resource_id and all((r.get("id") or "") != example_resource_id for r in affected_resources):
+            affected_resources.append({"name": resource_name_from_id(example_resource_id), "kind": "telemetry", "id": example_resource_id})
+        affected_resources = dedupe_resources(affected_resources)
 
         items.append(
             {
@@ -1314,27 +1312,33 @@ def load_recent_error_operations(minutes: int = 60, limit: int = 12) -> list[dic
                 "last_seen": row.get("LastSeen", ""),
                 "example_message": message,
                 "example_details": str(row.get("ExampleDetails", "") or ""),
-                "title": title,
-                "summary": summary,
+                # AI-generated plain-English fields (fall back to rule-based)
+                "title": sanitize_text(ai.get("title")) or describe_issue_title(source_table, error_type, message, fix),
+                "what_happened": sanitize_text(ai.get("what_happened")) or message,
+                "why_it_occurred": sanitize_text(ai.get("why_it_occurred")) or fix["reason"],
+                "affected_resource": sanitize_text(ai.get("affected_resource")) or fix["resource_name"],
+                "summary": describe_issue_summary(source_table, error_type, message, fix),
                 "role": classify_issue_role(message),
                 "operation_id": row.get("ExampleOperationId", ""),
                 "severity": severity,
-                "severity_score": parse_int(
-                    analysis.get("severity_score", {"critical": 9, "high": 8, "medium": 5, "low": 3}.get(severity, 5)),
-                    {"critical": 9, "high": 8, "medium": 5, "low": 3}.get(severity, 5),
-                ),
+                "severity_score": {"critical": 9, "high": 8, "medium": 5, "low": 3}.get(severity, 5),
                 "severity_rank": severity_rank(severity),
-                "why_it_occurred": sanitize_text(analysis.get("why_it_occurred")) or fix["reason"],
                 "where_it_occurred": {
-                    "component": sanitize_text(location.get("component")) or fix["component"],
+                    "component": fix["component"],
                     "file_path": file_path,
                     "line_number": line_number,
-                    "resource": sanitize_text(location.get("resource")) or fix["resource_name"],
+                    "function_name": function_name,
+                    "resource": fix["resource_name"],
+                },
+                # AI-suggested fix
+                "ai_fix": {
+                    "description": sanitize_text(ai_fix.get("description")) or fix["reason"],
+                    "is_code_change": bool(ai_fix.get("is_code_change") and file_path and line_number and line_number != "0"),
+                    "fix_type": sanitize_text(ai_fix.get("fix_type")) or fix["fix_type"],
                 },
                 "fix": fix,
-                "fix_steps": analysis.get("fix_steps") if issue_id in ai_analysis_by_id else [],
                 "affected_resources": affected_resources,
-                "analysis_source": "azure_openai" if issue_id in ai_analysis_by_id else "fallback_rules",
+                "ai_available": bool(ai),
             }
         )
 
@@ -2120,7 +2124,9 @@ def load_error_operations_context(request: Request, msg: str = "", error: str = 
             "issue_overview": issue_overview,
             "minutes": minutes,
             "error_ops_configured": is_error_operations_configured(),
-            "ai_error_analysis_configured": is_ai_error_analysis_configured(),
+            "ai_configured": is_ai_configured(),
+            "github_configured": is_github_dashboard_configured(),
+            "github_repository": GITHUB_REPOSITORY,
             "allow_webapp_restart": ALLOW_WEBAPP_RESTART,
             "allow_functionapp_restart": ALLOW_FUNCTIONAPP_RESTART,
             "allow_postgres_restart": ALLOW_POSTGRES_RESTART,
@@ -2643,36 +2649,6 @@ def load_pipeline_stages() -> list[dict[str, Any]]:
     return stages
 
 
-def analyze_pipeline_with_ai(stages: list[dict[str, Any]]) -> str:
-    """Return a brief narrative diagnosis of the pipeline state using Azure OpenAI."""
-    if not is_ai_error_analysis_configured():
-        return ""
-
-    unhealthy = [s for s in stages if s["status"] in ("unhealthy", "degraded", "unknown")]
-    if not unhealthy:
-        return "All pipeline stages are healthy. No action required."
-
-    system_prompt = (
-        "You are diagnosing a live employee attendance tracking pipeline. "
-        "The pipeline stages are: Web App → IoT Hub → Service Bus → Function App → PostgreSQL, with Redis as a cache. "
-        "Given the health snapshot, return strict JSON with the shape: "
-        '{"narrative": "<2-3 sentence diagnosis explaining which stages are down and the downstream impact on employees>"} '
-        "No markdown. Be specific about how the failure affects employee punch-in/out and data integrity."
-    )
-    stage_snapshot = [
-        {
-            "stage": s["stage_name"],
-            "status": s["status"],
-            "message": s["message"],
-            "issue": s["issue_title"],
-        }
-        for s in stages
-    ]
-    try:
-        result = call_azure_openai_json(system_prompt, {"pipeline_stages": stage_snapshot})
-        return sanitize_text(result.get("narrative", ""))
-    except Exception:
-        return ""
 
 
 def get_mobile_user_from_header(authorization: str | None) -> dict:
@@ -3236,7 +3212,6 @@ def admin_pipeline_guardian(request: Request, msg: str = "", error: str = ""):
         return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
 
     stages: list[dict[str, Any]] = []
-    ai_narrative = ""
     scan_error = error
 
     try:
@@ -3244,12 +3219,6 @@ def admin_pipeline_guardian(request: Request, msg: str = "", error: str = ""):
     except Exception as exc:
         record_exception_to_telemetry(exc, action="load_pipeline_stages")
         scan_error = str(exc)
-
-    if stages:
-        try:
-            ai_narrative = analyze_pipeline_with_ai(stages)
-        except Exception:
-            pass
 
     issues = [s for s in stages if s["status"] in ("unhealthy", "degraded", "unknown") and s["status"] != "not_configured"]
     stage_counts = {
@@ -3269,7 +3238,6 @@ def admin_pipeline_guardian(request: Request, msg: str = "", error: str = ""):
             "error": scan_error,
             "stages": stages,
             "issues": issues,
-            "ai_narrative": ai_narrative,
             "stage_counts": stage_counts,
         },
     )
@@ -3309,43 +3277,12 @@ def admin_pipeline_dismiss(request: Request, stage_id: str = Form(""), stage_nam
 @app.post("/admin/errors/apply")
 def admin_error_apply_fix(
     request: Request,
-    fix_steps_json: str = Form(""),
     fix_type: str = Form(""),
     minutes: int = Form(60),
-    source_table: str = Form(""),
-    error_type: str = Form(""),
-    example_message: str = Form(""),
 ):
     if not require_admin_session(request):
         return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
 
-    del source_table, error_type, example_message
-
-    # AI-generated fix steps take priority over legacy fix_type
-    if fix_steps_json:
-        try:
-            steps = json.loads(fix_steps_json)
-        except json.JSONDecodeError:
-            return RedirectResponse(
-                f"/admin/errors?minutes={minutes}&error={urllib_parse.quote_plus('Invalid fix steps JSON.')}",
-                status_code=303,
-            )
-        results = []
-        try:
-            for step in steps:
-                results.append(execute_fix_step(step))
-            log_event(logging.INFO, "ai_fix_steps_applied", step_count=len(steps))
-            msg = " | ".join(results) or "Fix applied."
-            return RedirectResponse(
-                f"/admin/errors?minutes={minutes}&msg={urllib_parse.quote_plus(msg)}", status_code=303
-            )
-        except Exception as exc:
-            record_exception_to_telemetry(exc, action="execute_fix_step")
-            return RedirectResponse(
-                f"/admin/errors?minutes={minutes}&error={urllib_parse.quote_plus(str(exc))}", status_code=303
-            )
-
-    # Fallback: legacy fix_type for issues without AI steps
     if not fix_type:
         return RedirectResponse(f"/admin/errors?minutes={minutes}&error=No+fix+provided", status_code=303)
     fix = build_fix_metadata(fix_type)
@@ -3359,6 +3296,55 @@ def admin_error_apply_fix(
         )
     except Exception as exc:
         record_exception_to_telemetry(exc, action="apply_error_fix", fix_type=fix_type)
+        return RedirectResponse(
+            f"/admin/errors?minutes={minutes}&error={urllib_parse.quote_plus(str(exc))}", status_code=303
+        )
+
+
+@app.post("/admin/errors/create-fix-pr")
+def admin_error_create_fix_pr(
+    request: Request,
+    issue_id: str = Form(""),
+    file_path: str = Form(""),
+    line_number: int = Form(0),
+    what_happened: str = Form(""),
+    why_it_occurred: str = Form(""),
+    fix_description: str = Form(""),
+    error_message: str = Form(""),
+    minutes: int = Form(60),
+):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+    if not file_path:
+        return RedirectResponse(
+            f"/admin/errors?minutes={minutes}&error={urllib_parse.quote_plus('No file path — cannot create fix PR.')}",
+            status_code=303,
+        )
+    if not is_github_dashboard_configured():
+        return RedirectResponse(
+            f"/admin/errors?minutes={minutes}&error={urllib_parse.quote_plus('GitHub is not configured. Set GITHUB_REPOSITORY and GITHUB_DASHBOARD_TOKEN.')}",
+            status_code=303,
+        )
+    if not is_ai_configured():
+        return RedirectResponse(
+            f"/admin/errors?minutes={minutes}&error={urllib_parse.quote_plus('Azure OpenAI is not configured. Set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT.')}",
+            status_code=303,
+        )
+    try:
+        pr_url = create_code_fix_pr(
+            issue_id=issue_id,
+            file_path=file_path,
+            line_number=line_number,
+            what_happened=what_happened,
+            why_it_occurred=why_it_occurred,
+            fix_description=fix_description,
+            error_message=error_message,
+        )
+        log_event(logging.INFO, "ai_code_fix_pr_created", issue_id=issue_id, file_path=file_path, pr_url=pr_url)
+        msg = f"Fix PR created: {pr_url}"
+        return RedirectResponse(f"/admin/errors?minutes={minutes}&msg={urllib_parse.quote_plus(msg)}", status_code=303)
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="create_code_fix_pr", issue_id=issue_id)
         return RedirectResponse(
             f"/admin/errors?minutes={minutes}&error={urllib_parse.quote_plus(str(exc))}", status_code=303
         )

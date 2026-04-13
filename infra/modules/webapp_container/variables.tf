@@ -247,6 +247,24 @@ variable "github_dashboard_token" {
   sensitive = true
 }
 
+variable "github_repository" {
+  type        = string
+  default     = ""
+  description = "GitHub repository in owner/repo format. Used for the admin dashboard PR integration and AI code fix."
+}
+
+variable "admin_email" {
+  type        = string
+  default     = "admin@example.com"
+  description = "Email address for the admin login account."
+}
+
+variable "admin_password" {
+  type        = string
+  sensitive   = true
+  description = "Password for the admin login account. Must be set — no insecure default."
+}
+
 variable "log_analytics_retention_days" {
   type    = number
   default = 30

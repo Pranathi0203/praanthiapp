@@ -41,6 +41,9 @@ module "app" {
   dd_agent_host                              = var.dd_agent_host
   dd_trace_agent_url                         = var.dd_trace_agent_url
   github_dashboard_token                     = var.github_dashboard_token
+  github_repository                          = var.github_repository
+  admin_email                                = var.admin_email
+  admin_password                             = var.admin_password
   alert_email                                = var.alert_email
   pg_alert_cpu_threshold                     = var.pg_alert_cpu_threshold
   iothub_data_contributor_principal_id       = var.iothub_data_contributor_principal_id
