@@ -54,6 +54,7 @@ module "app" {
   dd_trace_agent_url                         = var.dd_trace_agent_url
   github_dashboard_token                     = var.github_dashboard_token
   github_repository                          = var.github_repository
+  github_branch                              = var.github_branch
   admin_email                                = var.admin_email
   admin_password                             = var.admin_password
   alert_email                                = var.alert_email

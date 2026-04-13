@@ -108,6 +108,11 @@ variable "github_repository" {
   default = "Pranathi0203/praanthiapp"
 }
 
+variable "github_branch" {
+  type    = string
+  default = "main"
+}
+
 variable "admin_email" {
   type    = string
   default = "pranymunnangi@gmail.com"

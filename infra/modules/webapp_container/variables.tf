@@ -253,6 +253,12 @@ variable "github_repository" {
   description = "GitHub repository in owner/repo format. Used for the admin dashboard PR integration and AI code fix."
 }
 
+variable "github_branch" {
+  type        = string
+  default     = "main"
+  description = "Branch the app was deployed from. AI fix PRs are created against this branch."
+}
+
 variable "admin_email" {
   type        = string
   default     = "admin@example.com"

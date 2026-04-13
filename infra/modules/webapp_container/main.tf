@@ -150,6 +150,7 @@ locals {
   optional_github_dashboard_settings = var.github_dashboard_token != "" ? {
     "GITHUB_DASHBOARD_TOKEN" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.github_dashboard_token[0].versionless_id})"
     "GITHUB_REPOSITORY"      = var.github_repository
+    "GITHUB_BRANCH"          = var.github_branch
   } : {}
   function_app_settings = merge(
     {
