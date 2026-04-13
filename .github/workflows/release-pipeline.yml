@@ -70,6 +70,9 @@ jobs:
       TF_VAR_iothub_eventhub_connection_string: ${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}
       TF_VAR_application_insights_connection_string: ${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}
       TF_VAR_github_dashboard_token: ${{ secrets.DASHBOARD_GH_TOKEN }}
+      TF_VAR_github_repository: ${{ vars.GITHUB_REPOSITORY }}
+      TF_VAR_admin_email: ${{ vars.ADMIN_EMAIL }}
+      TF_VAR_admin_password: ${{ secrets.ADMIN_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -397,6 +400,9 @@ jobs:
       TF_VAR_iothub_eventhub_connection_string: ${{ secrets.IOTHUB_EVENTHUB_CONNECTION_STRING }}
       TF_VAR_application_insights_connection_string: ${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}
       TF_VAR_github_dashboard_token: ${{ secrets.DASHBOARD_GH_TOKEN }}
+      TF_VAR_github_repository: ${{ vars.GITHUB_REPOSITORY }}
+      TF_VAR_admin_email: ${{ vars.ADMIN_EMAIL }}
+      TF_VAR_admin_password: ${{ secrets.ADMIN_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
