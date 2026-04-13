@@ -1076,7 +1076,7 @@ Return JSON exactly matching this schema:
       "suggested_fix": {
         "description": "Plain English: what to change to fix this",
         "is_code_change": false,
-        "fix_type": "code_change|restart_service|config_change|manual_investigation"
+        "fix_type": "short description of the fix action"
       }
     }
   ]
@@ -1085,15 +1085,52 @@ Return JSON exactly matching this schema:
 Rules:
 - Simple words. "The database ran out of connections" not "Connection pool exhaustion occurred".
 - code_location.file_path must come from the error stack trace only — never guess.
-- suggested_fix.is_code_change = true only when you have a file_path from the stack trace and a specific line-level code change can fix the error.
+- Some issues include a "code_snippet" field with the actual source code around the error line. Use it to write a precise, specific suggested_fix.description that references the real variable names and logic you can see.
+- suggested_fix.is_code_change = true whenever code_location.file_path is present and the error is a code-level bug (KeyError, AttributeError, TypeError, ValueError, IndexError, unhandled exception in application code, missing field, null check, etc.) where editing the source file would fix it. These errors should ALWAYS be code fixes, not restarts.
+- suggested_fix.is_code_change = false only for infrastructure issues: service unavailable, connection timeout, out of memory, disk full, external API down, certificate expired.
 - severity: critical = users cannot use the app, high = intermittent failures, medium = degraded, low = no user impact."""
+
+
+def github_get_snippet(file_path: str, line_number: int, context: int = 20) -> str:
+    """Fetch ±context lines around line_number from a file in the GitHub repo.
+    Returns an empty string if the file cannot be fetched or GitHub is not configured."""
+    if not is_github_dashboard_configured() or not file_path:
+        return ""
+    try:
+        content, _ = github_get_file(file_path)
+        lines = content.splitlines()
+        start = max(0, line_number - context - 1)
+        end = min(len(lines), line_number + context)
+        snippet_lines = [f"{start + 1 + j}: {l}" for j, l in enumerate(lines[start:end])]
+        return "\n".join(snippet_lines)
+    except Exception:
+        return ""
+
+
+def _extract_file_line_from_row(row: dict[str, Any]) -> tuple[str, int]:
+    """Best-effort extract file path and line number from error details/message."""
+    details = str(row.get("ExampleDetails", "") or "")
+    message = str(row.get("ExampleMessage", "") or "")
+    text = details or message
+    import re
+    # Match "File: path/to/file.py:34" or 'file "path.py", line 34' patterns
+    for pattern in [
+        r'[Ff]ile[:\s]+["\']?([^\s"\']+\.py)["\']?,?\s*[Ll]ine[:\s]+(\d+)',
+        r'([^\s"\']+\.py)[:\s]+(\d+)',
+    ]:
+        m = re.search(pattern, text)
+        if m:
+            return m.group(1), int(m.group(2))
+    return "", 0
 
 
 def analyze_errors_with_ai(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     if not rows or not is_ai_configured():
         return {}
-    issues_payload = [
-        {
+
+    issues_payload = []
+    for i, row in enumerate(rows, start=1):
+        issue: dict[str, Any] = {
             "issue_id": f"err-{i}",
             "source": row.get("SourceTable", ""),
             "error_type": row.get("ErrorType", ""),
@@ -1103,8 +1140,14 @@ def analyze_errors_with_ai(rows: list[dict[str, Any]]) -> dict[str, dict[str, An
             "first_seen": str(row.get("FirstSeen", "") or ""),
             "last_seen": str(row.get("LastSeen", "") or ""),
         }
-        for i, row in enumerate(rows, start=1)
-    ]
+        # Attach targeted code snippet if we can find a file/line in the stack trace
+        file_path, line_number = _extract_file_line_from_row(row)
+        if file_path and line_number:
+            snippet = github_get_snippet(file_path, line_number)
+            if snippet:
+                issue["code_snippet"] = f"# {file_path} (around line {line_number})\n{snippet}"
+        issues_payload.append(issue)
+
     result = call_azure_openai(_AI_ANALYSIS_SYSTEM_PROMPT, json_dumps_compact({"issues": issues_payload}))
     return {
         sanitize_text(item.get("issue_id")): item
