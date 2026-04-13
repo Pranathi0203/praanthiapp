@@ -2036,7 +2036,7 @@ def github_api_request(
             detail = json.loads(raw).get("message", raw)
         except json.JSONDecodeError:
             pass
-        raise RuntimeError(f"GitHub API request failed ({exc.code}): {detail}") from exc
+        raise RuntimeError(f"GitHub API request failed ({exc.code}): {detail} [url={method} {url}]") from exc
     except urllib_error.URLError as exc:
         raise RuntimeError(f"GitHub API request failed: {exc.reason}") from exc
 
