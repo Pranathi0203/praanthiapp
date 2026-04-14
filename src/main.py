@@ -1026,12 +1026,15 @@ def is_ai_configured() -> bool:
     return bool(AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY and AZURE_OPENAI_DEPLOYMENT)
 
 
-def call_azure_openai(system_prompt: str, user_message: str) -> dict[str, Any]:
-    url = (
+def _openai_url() -> str:
+    return (
         f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/"
         f"{urllib_parse.quote(AZURE_OPENAI_DEPLOYMENT, safe='')}"
         f"/chat/completions?api-version={urllib_parse.quote(AZURE_OPENAI_API_VERSION, safe='')}"
     )
+
+
+def call_azure_openai(system_prompt: str, user_message: str) -> dict[str, Any]:
     payload = {
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -1042,7 +1045,7 @@ def call_azure_openai(system_prompt: str, user_message: str) -> dict[str, Any]:
         "response_format": {"type": "json_object"},
     }
     response = post_json_with_headers(
-        url,
+        _openai_url(),
         {"api-key": AZURE_OPENAI_API_KEY, "Content-Type": "application/json"},
         payload,
         timeout=60,
@@ -1053,17 +1056,46 @@ def call_azure_openai(system_prompt: str, user_message: str) -> dict[str, Any]:
     return parse_json_response_text((choices[0].get("message") or {}).get("content", ""))
 
 
-def _build_ai_analysis_prompt() -> str:
-    catalog = build_fix_catalog()
-    actions_doc = "\n".join(
-        f'  - "{e["fix_type"]}": {e["label"]} (available: {e["available"]})'
-        for e in catalog
+def call_azure_openai_with_tools(system_prompt: str, user_message: str, tools: list[dict]) -> dict[str, Any]:
+    """Call Azure OpenAI with tool definitions. Returns {tool_calls: [...], content: str}."""
+    payload = {
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        "temperature": 0.1,
+        "max_completion_tokens": 4000,
+        "tools": tools,
+        "tool_choice": "auto",
+    }
+    response = post_json_with_headers(
+        _openai_url(),
+        {"api-key": AZURE_OPENAI_API_KEY, "Content-Type": "application/json"},
+        payload,
+        timeout=60,
     )
-    return f"""\
-You are an expert software engineer analyzing Azure App Insights error logs.
+    choices = response.get("choices") or []
+    if not choices:
+        raise RuntimeError("Azure OpenAI returned no choices.")
+    message = choices[0].get("message") or {}
+    return {
+        "tool_calls": message.get("tool_calls") or [],
+        "content": message.get("content") or "",
+    }
 
-Explain each error in plain, simple English — as if telling a developer what broke and why.
-No jargon. No Azure-specific terms unless necessary. Be concise.
+
+def _build_ai_analysis_prompt() -> str:
+    return f"""\
+You are an expert software engineer and Azure operator analyzing Azure App Insights error logs.
+
+Explain each error in plain English. For infrastructure failures decide the exact az CLI \
+command to fix it. For code bugs set is_code_change = true and leave fix_command empty.
+
+Environment:
+  resource_group  : {AZURE_RESOURCE_GROUP or "unknown"}
+  webapp_name     : {WEBAPP_NAME or "unknown"}
+  function_app    : {FUNCTION_APP_NAME or "unknown"}
+  postgres_server : {AZURE_POSTGRES_SERVER_NAME or "unknown"}
 
 Return JSON exactly matching this schema:
 {{
@@ -1083,24 +1115,216 @@ Return JSON exactly matching this schema:
       "suggested_fix": {{
         "description": "Plain English: what to change to fix this",
         "is_code_change": false,
-        "fix_action": "one of the fix_action keys listed below"
+        "fix_command": ""
       }}
     }}
   ]
 }}
 
-Available fix actions — you must pick exactly one for suggested_fix.fix_action:
-{actions_doc}
-
 Rules:
 - Simple words. "The database ran out of connections" not "Connection pool exhaustion occurred".
 - code_location.file_path must come from the error stack trace only — never guess.
-- If a file_path is from a third-party library (e.g. site-packages, /usr/local/lib) it is NOT your code — do not set is_code_change = true for it.
-- Some issues include a "code_snippet" field with the actual source code around the error line. Use it to write a precise, specific suggested_fix.description that references the real variable names and logic you can see.
-- suggested_fix.is_code_change = true whenever code_location.file_path is your application code (not a library) and the error is a code-level bug (KeyError, AttributeError, TypeError, ValueError, IndexError, unhandled exception, missing field, null check, etc.). These should ALWAYS be code fixes, not restarts.
-- suggested_fix.is_code_change = false for infrastructure issues (service down, connection timeout, out of memory, disk full, external API down, certificate expired) or third-party library errors. Pick the most appropriate fix_action from the list above.
-- If none of the infrastructure actions make sense (e.g. transient network blip, third-party timeout, self-healing issue), pick "manual_investigation".
+- If file_path is from a third-party library (site-packages, /usr/local/lib) it is NOT application code — is_code_change must be false.
+- Some issues include a "code_snippet" field with actual source code. Use it to write a precise fix description referencing real variable names.
+- is_code_change = true for application code bugs (KeyError, AttributeError, TypeError, ValueError, IndexError, missing field, null check). Leave fix_command empty.
+- is_code_change = false for infrastructure failures. Set fix_command to a complete az CLI command.
+- fix_command examples: "az webapp restart --resource-group <rg> --name <app>" or "az postgres flexible-server restart --resource-group <rg> --name <server>"
+- If transient, self-healing, or third-party library error with no actionable fix, leave fix_command empty.
 - severity: critical = users cannot use the app, high = intermittent failures, medium = degraded, low = no user impact."""
+
+
+# ─── Defender Recommendations Agent ──────────────────────────────────────────
+
+_AI_DEFENDER_PROMPT = f"""\
+You are an Azure security engineer analyzing Microsoft Defender for Cloud recommendations.
+
+For each unhealthy recommendation decide the exact az CLI command or ARM REST call \
+to remediate it. Be specific — use the resource names and IDs provided.
+
+Environment:
+  subscription_id : {AZURE_SUBSCRIPTION_ID or "unknown"}
+  resource_group  : {AZURE_RESOURCE_GROUP or "unknown"}
+
+Return JSON exactly matching this schema:
+{{
+  "recommendations": [
+    {{
+      "rec_id": "rec-N",
+      "title": "Short plain-English title (max 10 words)",
+      "what_happened": "One sentence: what the security gap is",
+      "why_it_matters": "One sentence: the risk if not fixed",
+      "affected_resource": "resource name",
+      "severity": "critical|high|medium|low",
+      "suggested_fix": {{
+        "description": "Plain English: what to do to fix this",
+        "fix_command": "complete az CLI command to remediate, or empty if no az command applies"
+      }}
+    }}
+  ]
+}}
+
+Rules:
+- fix_command must be a complete, runnable az CLI command using the exact resource names from the input.
+- If the fix requires portal or manual steps only, leave fix_command empty and describe it in description.
+- severity mapping: High -> high, Medium -> medium, Low -> low."""
+
+
+def load_defender_recommendations() -> list[dict[str, Any]]:
+    """Fetch unhealthy Defender for Cloud assessments via REST API."""
+    if not AZURE_SUBSCRIPTION_ID:
+        return []
+    token = run_azure_cli_access_token("https://management.azure.com/")
+    url = (
+        f"https://management.azure.com/subscriptions/{AZURE_SUBSCRIPTION_ID}"
+        f"/providers/Microsoft.Security/assessments?api-version=2021-06-01"
+    )
+    response = post_json_with_headers.__wrapped__(url, {"Authorization": f"Bearer {token}"}) \
+        if hasattr(post_json_with_headers, "__wrapped__") else None
+    # Use urllib directly
+    req = urllib_request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib_request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"Defender API failed: {exc}") from exc
+
+    items = data.get("value") or []
+    unhealthy = []
+    for item in items:
+        props = item.get("properties") or {}
+        status = (props.get("status") or {}).get("code", "")
+        if status != "Unhealthy":
+            continue
+        resource_details = props.get("resourceDetails") or {}
+        unhealthy.append({
+            "rec_id": item.get("name", ""),
+            "display_name": props.get("displayName", ""),
+            "status": status,
+            "resource_id": resource_details.get("Id", ""),
+            "resource_name": resource_details.get("ResourceName", ""),
+            "resource_type": resource_details.get("ResourceType", ""),
+            "status_change_date": (props.get("status") or {}).get("statusChangeDate", ""),
+        })
+    return unhealthy
+
+
+def analyze_defender_with_ai(recommendations: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    if not recommendations or not is_ai_configured():
+        return {}
+    result = call_azure_openai(
+        _AI_DEFENDER_PROMPT,
+        json_dumps_compact({"recommendations": recommendations}),
+    )
+    return {
+        sanitize_text(item.get("rec_id")): item
+        for item in (result.get("recommendations") or [])
+        if isinstance(item, dict) and item.get("rec_id")
+    }
+
+
+# ─── Policy Compliance Agent ──────────────────────────────────────────────────
+
+_AI_POLICY_PROMPT = f"""\
+You are an Azure compliance engineer analyzing Azure Policy non-compliant resources.
+
+For each policy violation decide the exact az CLI command to bring the resource \
+into compliance. Be specific — use the exact resource names and IDs provided.
+
+Environment:
+  subscription_id : {AZURE_SUBSCRIPTION_ID or "unknown"}
+  resource_group  : {AZURE_RESOURCE_GROUP or "unknown"}
+
+Return JSON exactly matching this schema:
+{{
+  "violations": [
+    {{
+      "viol_id": "pol-N",
+      "title": "Short plain-English title (max 10 words)",
+      "what_failed": "One sentence: what policy rule the resource is breaking",
+      "why_it_matters": "One sentence: the compliance or security risk",
+      "affected_resource": "resource name",
+      "severity": "critical|high|medium|low",
+      "suggested_fix": {{
+        "description": "Plain English: what needs to change to comply",
+        "fix_command": "complete az CLI command to remediate, or empty if not applicable"
+      }}
+    }}
+  ]
+}}
+
+Rules:
+- fix_command must be a complete, runnable az CLI command using the exact resource IDs from the input.
+- Use az resource update, az webapp update, az storage account update, etc. as appropriate.
+- If the fix cannot be done via az CLI, leave fix_command empty and explain in description.
+- severity: map based on security impact — auth/encryption policies = high, diagnostic logs = low."""
+
+
+def load_policy_violations() -> list[dict[str, Any]]:
+    """Fetch non-compliant policy states via az CLI."""
+    if not AZURE_RESOURCE_GROUP:
+        return []
+    raw = run_azure_cli_json([
+        "policy", "state", "list",
+        "--resource-group", AZURE_RESOURCE_GROUP,
+        "--filter", "complianceState eq 'NonCompliant'",
+    ])
+    if not isinstance(raw, list):
+        return []
+    seen: set[tuple[str, str]] = set()
+    violations = []
+    for item in raw:
+        policy_name = str(item.get("policyDefinitionName", "") or "")
+        resource_id = str(item.get("resourceId", "") or "")
+        key = (policy_name, resource_id)
+        if key in seen or not policy_name or not resource_id:
+            continue
+        seen.add(key)
+        violations.append({
+            "policy_definition_name": policy_name,
+            "policy_definition_reference_id": str(item.get("policyDefinitionReferenceId", "") or ""),
+            "policy_action": str(item.get("policyDefinitionAction", "") or ""),
+            "resource_id": resource_id,
+            "resource_type": str(item.get("resourceType", "") or ""),
+            "resource_group": str(item.get("resourceGroup", "") or ""),
+            "timestamp": str(item.get("timestamp", "") or ""),
+        })
+    return violations
+
+
+def analyze_policy_with_ai(violations: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    if not violations or not is_ai_configured():
+        return {}
+    # Batch: AI analyses up to 20 at a time
+    batched = violations[:20]
+    indexed = [{"index": i + 1, **v} for i, v in enumerate(batched)]
+    result = call_azure_openai(
+        _AI_POLICY_PROMPT,
+        json_dumps_compact({"violations": indexed}),
+    )
+    return {
+        sanitize_text(item.get("viol_id")): item
+        for item in (result.get("violations") or [])
+        if isinstance(item, dict) and item.get("viol_id")
+    }
+
+
+# ─── az command execution ─────────────────────────────────────────────────────
+
+_BLOCKED_AZ_SUBCOMMANDS = {"delete", "remove", "purge", "force-delete", "drop"}
+
+
+def validate_and_run_az_command(command: str) -> str:
+    """Validate an AI-generated az command is safe, then execute it. Returns output."""
+    command = command.strip()
+    if not command.startswith("az "):
+        raise RuntimeError("Only az CLI commands are permitted.")
+    parts = command.split()
+    for part in parts:
+        if part.lower() in _BLOCKED_AZ_SUBCOMMANDS:
+            raise RuntimeError(f"Command contains a destructive verb '{part}' — blocked for safety.")
+    args = parts[1:]  # strip leading "az"
+    result = run_azure_cli_json(args)
+    return json.dumps(result) if result else "Command completed successfully."
 
 
 def normalize_repo_file_path(file_path: str) -> str:
@@ -1395,8 +1619,6 @@ def load_recent_error_operations(minutes: int = 60, limit: int = 12) -> list[dic
         message = str(row.get("ExampleMessage", ""))
         count = int(row.get("Count", 0) or 0)
         ai = ai_by_id.get(issue_id, {})
-        ai_fix_action = sanitize_text((ai.get("suggested_fix") or {}).get("fix_action", "")) or "manual_investigation"
-        fix = build_fix_metadata(ai_fix_action)
 
         # Code location: prefer AI-extracted (from stack trace analysis), fall back to regex
         ai_loc = ai.get("code_location") or {}
@@ -1413,11 +1635,12 @@ def load_recent_error_operations(minutes: int = 60, limit: int = 12) -> list[dic
             severity = infer_error_severity(source_table, message, count)
 
         ai_fix = ai.get("suggested_fix") or {}
+        fix_command = sanitize_text(ai_fix.get("fix_command") or "")
         example_resource_id = str(row.get("ExampleResourceId", "") or "")
-        affected_resources = [r for r in fix.get("resources", []) if r.get("name")]
-        if example_resource_id and all((r.get("id") or "") != example_resource_id for r in affected_resources):
-            affected_resources.append({"name": resource_name_from_id(example_resource_id), "kind": "telemetry", "id": example_resource_id})
-        affected_resources = dedupe_resources(affected_resources)
+        affected_resources = dedupe_resources(
+            [{"name": resource_name_from_id(example_resource_id), "kind": "telemetry", "id": example_resource_id}]
+            if example_resource_id else []
+        )
 
         items.append(
             {
@@ -1430,31 +1653,25 @@ def load_recent_error_operations(minutes: int = 60, limit: int = 12) -> list[dic
                 "last_seen": row.get("LastSeen", ""),
                 "example_message": message,
                 "example_details": str(row.get("ExampleDetails", "") or ""),
-                # AI-generated plain-English fields (fall back to rule-based)
-                "title": sanitize_text(ai.get("title")) or describe_issue_title(source_table, error_type, message, fix),
+                "title": sanitize_text(ai.get("title")) or message[:80],
                 "what_happened": sanitize_text(ai.get("what_happened")) or message,
-                "why_it_occurred": sanitize_text(ai.get("why_it_occurred")) or fix["reason"],
-                "affected_resource": sanitize_text(ai.get("affected_resource")) or fix["resource_name"],
-                "summary": describe_issue_summary(source_table, error_type, message, fix),
+                "why_it_occurred": sanitize_text(ai.get("why_it_occurred")) or "",
+                "affected_resource": sanitize_text(ai.get("affected_resource")) or "",
                 "role": classify_issue_role(message),
                 "operation_id": row.get("ExampleOperationId", ""),
                 "severity": severity,
                 "severity_score": {"critical": 9, "high": 8, "medium": 5, "low": 3}.get(severity, 5),
                 "severity_rank": severity_rank(severity),
                 "where_it_occurred": {
-                    "component": fix["component"],
                     "file_path": file_path,
                     "line_number": line_number,
                     "function_name": function_name,
-                    "resource": fix["resource_name"],
                 },
-                # AI-suggested fix
                 "ai_fix": {
-                    "description": sanitize_text(ai_fix.get("description")) or fix["reason"],
+                    "description": sanitize_text(ai_fix.get("description")) or "",
                     "is_code_change": bool(ai_fix.get("is_code_change") and file_path and line_number and line_number != "0"),
-                    "fix_type": fix["fix_type"],
+                    "fix_command": fix_command,
                 },
-                "fix": fix,
                 "affected_resources": affected_resources,
                 "ai_available": bool(ai),
             }
@@ -2214,20 +2431,88 @@ def load_github_dashboard_context(request: Request, msg: str = "", error: str = 
     )
 
 
-def load_error_operations_context(request: Request, msg: str = "", error: str = "", minutes: int = 60):
+def load_error_operations_context(
+    request: Request,
+    msg: str = "",
+    error: str = "",
+    minutes: int = 60,
+    tab: str = "errors",
+):
     session_admin = require_admin_session(request)
     if not session_admin:
         return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
 
     issues: list[dict[str, Any]] = []
     issue_overview = build_issue_overview([])
+    defender_items: list[dict[str, Any]] = []
+    policy_items: list[dict[str, Any]] = []
     scan_error = error
-    if is_error_operations_configured():
+
+    if tab == "errors" and is_error_operations_configured():
         try:
             issues = load_recent_error_operations(minutes=minutes)
             issue_overview = build_issue_overview(issues)
         except Exception as exc:
             record_exception_to_telemetry(exc, action="scan_recent_errors")
+            scan_error = str(exc)
+
+    elif tab == "defender":
+        try:
+            raw_recs = load_defender_recommendations()
+            ai_recs = analyze_defender_with_ai(raw_recs)
+            for i, rec in enumerate(raw_recs, start=1):
+                rec_id = f"rec-{i}"
+                ai = ai_recs.get(rec_id, {})
+                ai_fix = (ai.get("suggested_fix") or {})
+                defender_items.append({
+                    "id": rec_id,
+                    "raw_id": rec.get("rec_id", ""),
+                    "title": sanitize_text(ai.get("title")) or rec.get("display_name", ""),
+                    "display_name": rec.get("display_name", ""),
+                    "what_happened": sanitize_text(ai.get("what_happened")) or rec.get("display_name", ""),
+                    "why_it_matters": sanitize_text(ai.get("why_it_matters")) or "",
+                    "affected_resource": sanitize_text(ai.get("affected_resource")) or rec.get("resource_name", ""),
+                    "resource_id": rec.get("resource_id", ""),
+                    "resource_type": rec.get("resource_type", ""),
+                    "severity": sanitize_text(ai.get("severity") or "medium").lower(),
+                    "status_change_date": rec.get("status_change_date", ""),
+                    "ai_fix": {
+                        "description": sanitize_text(ai_fix.get("description")) or "",
+                        "fix_command": sanitize_text(ai_fix.get("fix_command") or ""),
+                    },
+                    "ai_available": bool(ai),
+                })
+        except Exception as exc:
+            record_exception_to_telemetry(exc, action="scan_defender")
+            scan_error = str(exc)
+
+    elif tab == "policy":
+        try:
+            raw_viols = load_policy_violations()
+            ai_viols = analyze_policy_with_ai(raw_viols)
+            for i, viol in enumerate(raw_viols, start=1):
+                viol_id = f"pol-{i}"
+                ai = ai_viols.get(viol_id, {})
+                ai_fix = (ai.get("suggested_fix") or {})
+                policy_items.append({
+                    "id": viol_id,
+                    "title": sanitize_text(ai.get("title")) or viol.get("policy_definition_reference_id", ""),
+                    "what_failed": sanitize_text(ai.get("what_failed")) or "",
+                    "why_it_matters": sanitize_text(ai.get("why_it_matters")) or "",
+                    "affected_resource": sanitize_text(ai.get("affected_resource")) or resource_name_from_id(viol.get("resource_id", "")),
+                    "resource_id": viol.get("resource_id", ""),
+                    "resource_type": viol.get("resource_type", ""),
+                    "policy_name": viol.get("policy_definition_name", ""),
+                    "severity": sanitize_text(ai.get("severity") or "medium").lower(),
+                    "timestamp": viol.get("timestamp", ""),
+                    "ai_fix": {
+                        "description": sanitize_text(ai_fix.get("description")) or "",
+                        "fix_command": sanitize_text(ai_fix.get("fix_command") or ""),
+                    },
+                    "ai_available": bool(ai),
+                })
+        except Exception as exc:
+            record_exception_to_telemetry(exc, action="scan_policy")
             scan_error = str(exc)
 
     return templates.TemplateResponse(
@@ -2238,16 +2523,16 @@ def load_error_operations_context(request: Request, msg: str = "", error: str = 
             "admin_email": session_admin["email"],
             "msg": msg,
             "error": scan_error,
+            "tab": tab,
             "issues": issues,
             "issue_overview": issue_overview,
+            "defender_items": defender_items,
+            "policy_items": policy_items,
             "minutes": minutes,
             "error_ops_configured": is_error_operations_configured(),
             "ai_configured": is_ai_configured(),
             "github_configured": is_github_dashboard_configured(),
             "github_repository": GITHUB_REPOSITORY,
-            "allow_webapp_restart": ALLOW_WEBAPP_RESTART,
-            "allow_functionapp_restart": ALLOW_FUNCTIONAPP_RESTART,
-            "allow_postgres_restart": ALLOW_POSTGRES_RESTART,
         },
     )
 
@@ -3104,8 +3389,8 @@ def admin_github_dashboard(request: Request, msg: str = "", error: str = ""):
 
 
 @app.get("/admin/errors", response_class=HTMLResponse)
-def admin_error_operations(request: Request, msg: str = "", error: str = "", minutes: int = 60):
-    return load_error_operations_context(request, msg=msg, error=error, minutes=minutes)
+def admin_error_operations(request: Request, msg: str = "", error: str = "", minutes: int = 60, tab: str = "errors"):
+    return load_error_operations_context(request, msg=msg, error=error, minutes=minutes, tab=tab)
 
 
 @app.get("/admin/databases", response_class=HTMLResponse)
@@ -3430,22 +3715,23 @@ def admin_error_create_fix_pr(
     fix_description: str = Form(""),
     error_message: str = Form(""),
     minutes: int = Form(60),
+    tab: str = Form("errors"),
 ):
     if not require_admin_session(request):
         return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
     if not file_path:
         return RedirectResponse(
-            f"/admin/errors?minutes={minutes}&error={urllib_parse.quote_plus('No file path — cannot create fix PR.')}",
+            f"/admin/errors?tab={tab}&minutes={minutes}&error={urllib_parse.quote_plus('No file path — cannot create fix PR.')}",
             status_code=303,
         )
     if not is_github_dashboard_configured():
         return RedirectResponse(
-            f"/admin/errors?minutes={minutes}&error={urllib_parse.quote_plus('GitHub is not configured. Set GITHUB_REPOSITORY and GITHUB_DASHBOARD_TOKEN.')}",
+            f"/admin/errors?tab={tab}&minutes={minutes}&error={urllib_parse.quote_plus('GitHub is not configured. Set GITHUB_REPOSITORY and GITHUB_DASHBOARD_TOKEN.')}",
             status_code=303,
         )
     if not is_ai_configured():
         return RedirectResponse(
-            f"/admin/errors?minutes={minutes}&error={urllib_parse.quote_plus('Azure OpenAI is not configured. Set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT.')}",
+            f"/admin/errors?tab={tab}&minutes={minutes}&error={urllib_parse.quote_plus('Azure OpenAI is not configured. Set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT.')}",
             status_code=303,
         )
     try:
@@ -3460,24 +3746,55 @@ def admin_error_create_fix_pr(
         )
         log_event(logging.INFO, "ai_code_fix_pr_created", issue_id=issue_id, file_path=file_path, pr_url=pr_url)
         msg = f"Fix PR created: {pr_url}"
-        return RedirectResponse(f"/admin/errors?minutes={minutes}&msg={urllib_parse.quote_plus(msg)}", status_code=303)
+        return RedirectResponse(f"/admin/errors?tab={tab}&minutes={minutes}&msg={urllib_parse.quote_plus(msg)}", status_code=303)
     except Exception as exc:
         record_exception_to_telemetry(exc, action="create_code_fix_pr", issue_id=issue_id)
         return RedirectResponse(
-            f"/admin/errors?minutes={minutes}&error={urllib_parse.quote_plus(str(exc))}", status_code=303
+            f"/admin/errors?tab={tab}&minutes={minutes}&error={urllib_parse.quote_plus(str(exc))}", status_code=303
         )
 
 
 @app.post("/admin/errors/deny")
-def admin_error_deny_fix(request: Request, minutes: int = Form(60), fix_label: str = Form("fix")):
+def admin_error_deny_fix(request: Request, minutes: int = Form(60), fix_label: str = Form("fix"), tab: str = Form("errors")):
     if not require_admin_session(request):
         return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
 
     message = f"{fix_label} was denied. No automated action was taken."
     return RedirectResponse(
-        f"/admin/errors?minutes={minutes}&msg={urllib_parse.quote_plus(message)}",
+        f"/admin/errors?tab={tab}&minutes={minutes}&msg={urllib_parse.quote_plus(message)}",
         status_code=303,
     )
+
+
+@app.post("/admin/errors/run-command")
+def admin_run_az_command(
+    request: Request,
+    fix_command: str = Form(""),
+    fix_label: str = Form("fix"),
+    minutes: int = Form(60),
+    tab: str = Form("errors"),
+):
+    if not require_admin_session(request):
+        return RedirectResponse("/admin/login?msg=Please+log+in+as+an+admin", status_code=303)
+    if not fix_command:
+        return RedirectResponse(
+            f"/admin/errors?tab={tab}&minutes={minutes}&error=No+command+provided",
+            status_code=303,
+        )
+    try:
+        output = validate_and_run_az_command(fix_command)
+        log_event(logging.INFO, "ai_az_command_executed", command=fix_command, output=output[:200])
+        msg = f"Command executed successfully: {fix_label}"
+        return RedirectResponse(
+            f"/admin/errors?tab={tab}&minutes={minutes}&msg={urllib_parse.quote_plus(msg)}",
+            status_code=303,
+        )
+    except Exception as exc:
+        record_exception_to_telemetry(exc, action="run_az_command", command=fix_command)
+        return RedirectResponse(
+            f"/admin/errors?tab={tab}&minutes={minutes}&error={urllib_parse.quote_plus(str(exc))}",
+            status_code=303,
+        )
 
 
 @app.post("/admin/github/approve")

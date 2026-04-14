@@ -186,6 +186,61 @@
       }
       .pill-on  { background: rgba(16,185,129,0.12); color: #065f46; }
       .pill-off { background: rgba(148,163,184,0.15); color: #475569; }
+
+      /* Tabs */
+      .tabs { display: flex; gap: 0; border-bottom: 2px solid #dde5f0; margin-bottom: 1.5rem; }
+      .tab-btn {
+        padding: 0.65rem 1.4rem;
+        font-size: 0.88rem;
+        font-weight: 600;
+        border: none;
+        background: none;
+        cursor: pointer;
+        color: #64748b;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+        text-decoration: none;
+        transition: color 0.15s;
+        display: inline-flex;
+        align-items: center;
+      }
+      .tab-btn:hover { color: #1e293b; }
+      .tab-btn.active { color: #2563eb; border-bottom-color: #2563eb; }
+      .tab-count {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 18px;
+        height: 18px;
+        padding: 0 5px;
+        border-radius: 999px;
+        font-size: 0.65rem;
+        font-weight: 800;
+        background: rgba(37,99,235,0.1);
+        color: #2563eb;
+        margin-left: 0.4rem;
+      }
+
+      /* az command block */
+      .cmd-block {
+        margin: 0.7rem 0 0.5rem;
+        padding: 0.65rem 0.9rem;
+        border-radius: 8px;
+        background: #0f172a;
+        color: #7dd3fc;
+        font-family: monospace;
+        font-size: 0.82rem;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .cmd-label {
+        font-size: 0.68rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #64748b;
+        margin-bottom: 0.3rem;
+      }
     </style>
   </head>
   <body>
@@ -193,19 +248,35 @@
       <section class="hero admin-hero">
         <div>
           <p class="eyebrow">Admin App</p>
-          <h1>AI Error Guardian</h1>
+          <h1>AI Guardian</h1>
           <p>
-            Reads App Insights logs, uses AI to explain what broke and why,
-            and offers to fix it — either by restarting a service or opening a GitHub PR with a code fix.<br />
+            AI reads App Insights errors, Defender recommendations, and Policy failures —
+            diagnoses each one and decides the fix on its own.<br />
             Signed in as <strong>{{ admin_email }}</strong>
           </p>
         </div>
         <div class="hero-actions">
-          <a class="icon-btn" href="/admin/errors?minutes={{ minutes }}" title="Refresh" aria-label="Refresh">&#x21bb;</a>
+          <a class="icon-btn" href="/admin/errors?tab={{ tab }}&minutes={{ minutes }}" title="Refresh" aria-label="Refresh">&#x21bb;</a>
           <a class="btn secondary" href="/admin/dashboard">Dashboard</a>
           <a class="btn" href="/admin/logout">Logout</a>
         </div>
       </section>
+
+      <!-- Tabs -->
+      <nav class="tabs">
+        <a class="tab-btn {% if tab == 'errors' %}active{% endif %}" href="/admin/errors?tab=errors&minutes={{ minutes }}">
+          App Errors
+          {% if issues %}<span class="tab-count">{{ issues|length }}</span>{% endif %}
+        </a>
+        <a class="tab-btn {% if tab == 'defender' %}active{% endif %}" href="/admin/errors?tab=defender&minutes={{ minutes }}">
+          Defender
+          {% if defender_items %}<span class="tab-count">{{ defender_items|length }}</span>{% endif %}
+        </a>
+        <a class="tab-btn {% if tab == 'policy' %}active{% endif %}" href="/admin/errors?tab=policy&minutes={{ minutes }}">
+          Policy
+          {% if policy_items %}<span class="tab-count">{{ policy_items|length }}</span>{% endif %}
+        </a>
+      </nav>
 
       {% if msg %}
       <p class="ok banner">
@@ -223,6 +294,7 @@
       <section class="card">
         {% if error_ops_configured %}
         <form method="get" action="/admin/errors">
+          <input type="hidden" name="tab" value="{{ tab }}" />
           <div class="scan-bar">
             <label for="minutes-input" style="font-weight:600; color:#334155;">Scan last</label>
             <input id="minutes-input" type="number" min="5" max="1440" name="minutes" value="{{ minutes }}" />
@@ -245,6 +317,9 @@
         </p>
         {% endif %}
       </section>
+
+      <!-- ===== APP ERRORS TAB ===== -->
+      {% if tab == 'errors' %}
 
       <!-- Stats -->
       <section class="stats-grid">
@@ -369,46 +444,45 @@
         </div>
         <div class="issue-actions">
           <form method="post" action="/admin/errors/create-fix-pr" class="inline-form">
-            <input type="hidden" name="minutes"        value="{{ minutes }}" />
-            <input type="hidden" name="issue_id"       value="{{ issue.id }}" />
-            <input type="hidden" name="file_path"      value="{{ issue.where_it_occurred.file_path }}" />
-            <input type="hidden" name="line_number"    value="{{ issue.where_it_occurred.line_number or 0 }}" />
-            <input type="hidden" name="what_happened"  value="{{ issue.what_happened }}" />
+            <input type="hidden" name="minutes"         value="{{ minutes }}" />
+            <input type="hidden" name="tab"             value="{{ tab }}" />
+            <input type="hidden" name="issue_id"        value="{{ issue.id }}" />
+            <input type="hidden" name="file_path"       value="{{ issue.where_it_occurred.file_path }}" />
+            <input type="hidden" name="line_number"     value="{{ issue.where_it_occurred.line_number or 0 }}" />
+            <input type="hidden" name="what_happened"   value="{{ issue.what_happened }}" />
             <input type="hidden" name="why_it_occurred" value="{{ issue.why_it_occurred }}" />
             <input type="hidden" name="fix_description" value="{{ issue.ai_fix.description }}" />
-            <input type="hidden" name="error_message"  value="{{ issue.example_message }}" />
+            <input type="hidden" name="error_message"   value="{{ issue.example_message }}" />
             <button class="btn" type="submit">Accept — create fix PR</button>
           </form>
           <form method="post" action="/admin/errors/deny" class="inline-form">
             <input type="hidden" name="minutes"   value="{{ minutes }}" />
+            <input type="hidden" name="tab"       value="{{ tab }}" />
             <input type="hidden" name="fix_label" value="{{ issue.title }}" />
             <button class="btn secondary" type="submit">Deny</button>
           </form>
         </div>
 
-        {% elif issue.fix.fix_type != "manual_investigation" %}
-        <!-- Service-level fix (restart etc.) -->
+        {% elif issue.ai_fix.fix_command %}
+        <!-- AI az CLI fix -->
         <div class="fix-block">
-          <p class="fix-block-label">&#x1F527; Suggested fix</p>
-          <h3>{{ issue.fix.action_label }}</h3>
-          <p>{{ issue.ai_fix.description }}</p>
-          {% if not issue.fix.is_available %}
-          <p style="margin-top:0.4rem; color:#dc2626; font-size:0.82rem;">
-            Fix not enabled — set the <code>ALLOW_*</code> flag to turn this on.
-          </p>
-          {% endif %}
+          <p class="fix-block-label">&#x1F527; AI suggested fix</p>
+          <h3>{{ issue.ai_fix.description }}</h3>
+          <p class="cmd-label" style="margin-top:0.5rem;">Azure CLI command</p>
+          <div class="cmd-block">{{ issue.ai_fix.fix_command }}</div>
         </div>
         <div class="issue-actions">
-          {% if issue.fix.is_available %}
-          <form method="post" action="/admin/errors/apply" class="inline-form">
-            <input type="hidden" name="minutes"  value="{{ minutes }}" />
-            <input type="hidden" name="fix_type" value="{{ issue.fix.fix_type }}" />
-            <button class="btn" type="submit">Accept and apply fix</button>
+          <form method="post" action="/admin/errors/run-command" class="inline-form">
+            <input type="hidden" name="minutes"     value="{{ minutes }}" />
+            <input type="hidden" name="tab"         value="{{ tab }}" />
+            <input type="hidden" name="fix_command" value="{{ issue.ai_fix.fix_command }}" />
+            <input type="hidden" name="fix_label"   value="{{ issue.title }}" />
+            <button class="btn" type="submit">Accept — run command</button>
           </form>
-          {% endif %}
           <form method="post" action="/admin/errors/deny" class="inline-form">
             <input type="hidden" name="minutes"   value="{{ minutes }}" />
-            <input type="hidden" name="fix_label" value="{{ issue.fix.action_label }}" />
+            <input type="hidden" name="tab"       value="{{ tab }}" />
+            <input type="hidden" name="fix_label" value="{{ issue.title }}" />
             <button class="btn secondary" type="submit">Deny</button>
           </form>
         </div>
@@ -425,6 +499,252 @@
         <p class="ok banner">No recurring errors found in the last {{ minutes }} minutes. The pipeline looks clean.</p>
       </section>
       {% endif %}
+
+      <!-- ===== DEFENDER TAB ===== -->
+      {% elif tab == 'defender' %}
+
+      <section class="stats-grid">
+        <article class="stat-card">
+          <span class="stat-label">Recommendations</span>
+          <strong class="stat-value">{{ defender_items | length }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">Critical</span>
+          <strong class="stat-value" style="color:#dc2626">{{ defender_items | selectattr("severity", "equalto", "critical") | list | length }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">High</span>
+          <strong class="stat-value" style="color:#ea580c">{{ defender_items | selectattr("severity", "equalto", "high") | list | length }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">Medium</span>
+          <strong class="stat-value" style="color:#d97706">{{ defender_items | selectattr("severity", "equalto", "medium") | list | length }}</strong>
+        </article>
+      </section>
+
+      {% if defender_items %}
+      {% for item in defender_items %}
+      <div class="error-card sev-{{ item.severity }}">
+
+        <div class="error-top">
+          <div>
+            <p class="error-source">Microsoft Defender{% if item.affected_resource %} &middot; {{ item.affected_resource }}{% endif %}</p>
+            <h2 class="error-title">{{ item.title }}</h2>
+          </div>
+          <span class="sev-badge sev-{{ item.severity }}">{{ item.severity }}</span>
+        </div>
+
+        {% if item.affected_resource or item.resource_type or item.status_change_date %}
+        <dl class="error-meta">
+          {% if item.affected_resource %}
+          <div>
+            <dt>Affected resource</dt>
+            <dd>{{ item.affected_resource }}</dd>
+          </div>
+          {% endif %}
+          {% if item.resource_type %}
+          <div>
+            <dt>Resource type</dt>
+            <dd>{{ item.resource_type }}</dd>
+          </div>
+          {% endif %}
+          {% if item.status_change_date %}
+          <div>
+            <dt>Status changed</dt>
+            <dd>{{ item.status_change_date | truncate(20, True, "") }}</dd>
+          </div>
+          {% endif %}
+        </dl>
+        {% endif %}
+
+        {% if item.ai_available %}
+        <p class="ai-tag">&#x2728; AI diagnosis</p>
+        {% endif %}
+        <div class="diagnosis-grid">
+          <div class="diag-block">
+            <h4>What happened</h4>
+            <p>{{ item.what_happened }}</p>
+          </div>
+          <div class="diag-block">
+            <h4>Why it matters</h4>
+            <p>{{ item.why_it_matters }}</p>
+          </div>
+        </div>
+
+        {% if item.ai_fix.fix_command %}
+        <div class="fix-block">
+          <p class="fix-block-label">&#x1F527; AI suggested fix</p>
+          <h3>{{ item.ai_fix.description }}</h3>
+          <p class="cmd-label" style="margin-top:0.5rem;">Azure CLI command</p>
+          <div class="cmd-block">{{ item.ai_fix.fix_command }}</div>
+        </div>
+        <div class="issue-actions">
+          <form method="post" action="/admin/errors/run-command" class="inline-form">
+            <input type="hidden" name="minutes"     value="{{ minutes }}" />
+            <input type="hidden" name="tab"         value="{{ tab }}" />
+            <input type="hidden" name="fix_command" value="{{ item.ai_fix.fix_command }}" />
+            <input type="hidden" name="fix_label"   value="{{ item.title }}" />
+            <button class="btn" type="submit">Accept — run command</button>
+          </form>
+          <form method="post" action="/admin/errors/deny" class="inline-form">
+            <input type="hidden" name="minutes"   value="{{ minutes }}" />
+            <input type="hidden" name="tab"       value="{{ tab }}" />
+            <input type="hidden" name="fix_label" value="{{ item.title }}" />
+            <button class="btn secondary" type="submit">Deny</button>
+          </form>
+        </div>
+        {% elif item.ai_fix.description %}
+        <div class="fix-block">
+          <p class="fix-block-label">&#x1F4CB; Recommended action</p>
+          <p>{{ item.ai_fix.description }}</p>
+        </div>
+        <div class="issue-actions">
+          <form method="post" action="/admin/errors/deny" class="inline-form">
+            <input type="hidden" name="minutes"   value="{{ minutes }}" />
+            <input type="hidden" name="tab"       value="{{ tab }}" />
+            <input type="hidden" name="fix_label" value="{{ item.title }}" />
+            <button class="btn secondary" type="submit">Dismiss</button>
+          </form>
+        </div>
+        {% else %}
+        <span class="chip chip-muted" style="margin-top:0.75rem; display:inline-flex;">Manual review required</span>
+        {% endif %}
+
+      </div>
+      {% endfor %}
+
+      {% else %}
+      <section class="card">
+        <p class="ok banner">No Defender recommendations found. Your environment looks clean.</p>
+      </section>
+      {% endif %}
+
+      <!-- ===== POLICY TAB ===== -->
+      {% elif tab == 'policy' %}
+
+      <section class="stats-grid">
+        <article class="stat-card">
+          <span class="stat-label">Violations</span>
+          <strong class="stat-value">{{ policy_items | length }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">Critical</span>
+          <strong class="stat-value" style="color:#dc2626">{{ policy_items | selectattr("severity", "equalto", "critical") | list | length }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">High</span>
+          <strong class="stat-value" style="color:#ea580c">{{ policy_items | selectattr("severity", "equalto", "high") | list | length }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">Medium</span>
+          <strong class="stat-value" style="color:#d97706">{{ policy_items | selectattr("severity", "equalto", "medium") | list | length }}</strong>
+        </article>
+      </section>
+
+      {% if policy_items %}
+      {% for item in policy_items %}
+      <div class="error-card sev-{{ item.severity }}">
+
+        <div class="error-top">
+          <div>
+            <p class="error-source">Azure Policy{% if item.affected_resource %} &middot; {{ item.affected_resource }}{% endif %}</p>
+            <h2 class="error-title">{{ item.title }}</h2>
+          </div>
+          <span class="sev-badge sev-{{ item.severity }}">{{ item.severity }}</span>
+        </div>
+
+        {% if item.affected_resource or item.resource_type or item.timestamp %}
+        <dl class="error-meta">
+          {% if item.affected_resource %}
+          <div>
+            <dt>Affected resource</dt>
+            <dd>{{ item.affected_resource }}</dd>
+          </div>
+          {% endif %}
+          {% if item.resource_type %}
+          <div>
+            <dt>Resource type</dt>
+            <dd>{{ item.resource_type }}</dd>
+          </div>
+          {% endif %}
+          {% if item.policy_name %}
+          <div>
+            <dt>Policy</dt>
+            <dd>{{ item.policy_name }}</dd>
+          </div>
+          {% endif %}
+          {% if item.timestamp %}
+          <div>
+            <dt>Detected</dt>
+            <dd>{{ item.timestamp | truncate(20, True, "") }}</dd>
+          </div>
+          {% endif %}
+        </dl>
+        {% endif %}
+
+        {% if item.ai_available %}
+        <p class="ai-tag">&#x2728; AI diagnosis</p>
+        {% endif %}
+        <div class="diagnosis-grid">
+          <div class="diag-block">
+            <h4>What failed</h4>
+            <p>{{ item.what_failed }}</p>
+          </div>
+          <div class="diag-block">
+            <h4>Why it matters</h4>
+            <p>{{ item.why_it_matters }}</p>
+          </div>
+        </div>
+
+        {% if item.ai_fix.fix_command %}
+        <div class="fix-block">
+          <p class="fix-block-label">&#x1F527; AI suggested fix</p>
+          <h3>{{ item.ai_fix.description }}</h3>
+          <p class="cmd-label" style="margin-top:0.5rem;">Azure CLI command</p>
+          <div class="cmd-block">{{ item.ai_fix.fix_command }}</div>
+        </div>
+        <div class="issue-actions">
+          <form method="post" action="/admin/errors/run-command" class="inline-form">
+            <input type="hidden" name="minutes"     value="{{ minutes }}" />
+            <input type="hidden" name="tab"         value="{{ tab }}" />
+            <input type="hidden" name="fix_command" value="{{ item.ai_fix.fix_command }}" />
+            <input type="hidden" name="fix_label"   value="{{ item.title }}" />
+            <button class="btn" type="submit">Accept — run command</button>
+          </form>
+          <form method="post" action="/admin/errors/deny" class="inline-form">
+            <input type="hidden" name="minutes"   value="{{ minutes }}" />
+            <input type="hidden" name="tab"       value="{{ tab }}" />
+            <input type="hidden" name="fix_label" value="{{ item.title }}" />
+            <button class="btn secondary" type="submit">Deny</button>
+          </form>
+        </div>
+        {% elif item.ai_fix.description %}
+        <div class="fix-block">
+          <p class="fix-block-label">&#x1F4CB; Recommended action</p>
+          <p>{{ item.ai_fix.description }}</p>
+        </div>
+        <div class="issue-actions">
+          <form method="post" action="/admin/errors/deny" class="inline-form">
+            <input type="hidden" name="minutes"   value="{{ minutes }}" />
+            <input type="hidden" name="tab"       value="{{ tab }}" />
+            <input type="hidden" name="fix_label" value="{{ item.title }}" />
+            <button class="btn secondary" type="submit">Dismiss</button>
+          </form>
+        </div>
+        {% else %}
+        <span class="chip chip-muted" style="margin-top:0.75rem; display:inline-flex;">Manual review required</span>
+        {% endif %}
+
+      </div>
+      {% endfor %}
+
+      {% else %}
+      <section class="card">
+        <p class="ok banner">No policy violations found. Your environment is compliant.</p>
+      </section>
+      {% endif %}
+
+      {% endif %}{# end tab switch #}
 
     </main>
   </body>
