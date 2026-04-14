@@ -107,6 +107,8 @@ locals {
     "APP_SECRET"                          = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.app_secret.versionless_id})"
     "ADMIN_EMAIL"                         = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.admin_email.versionless_id})"
     "ADMIN_PASSWORD"                      = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.admin_password.versionless_id})"
+    "GITHUB_REPOSITORY"                   = var.github_repository
+    "GITHUB_BRANCH"                       = var.github_branch
   }
   optional_app_settings = var.contoso_device_connection_string != "" ? {
     "CONTOSO_DEVICE_CONNECTION_STRING" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.contoso_device_connection_string[0].versionless_id})"
@@ -149,8 +151,6 @@ locals {
   )
   optional_github_dashboard_settings = var.github_dashboard_token != "" ? {
     "GITHUB_DASHBOARD_TOKEN" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.github_dashboard_token[0].versionless_id})"
-    "GITHUB_REPOSITORY"      = var.github_repository
-    "GITHUB_BRANCH"          = var.github_branch
   } : {}
   function_app_settings = merge(
     {
