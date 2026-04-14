@@ -543,6 +543,40 @@ resource "azurerm_role_assignment" "webapp_staging_rg_contributor" {
   principal_id         = azurerm_linux_web_app_slot.staging.identity[0].principal_id
 }
 
+# Defender for Cloud — Security Reader at subscription scope.
+# Required for the AI Guardian Defender tab to call:
+#   GET .../subscriptions/{sub}/providers/Microsoft.Security/assessments
+# The RG-level Contributor role does not include Microsoft.Security/*/read.
+resource "azurerm_role_assignment" "webapp_security_reader" {
+  scope                = "/subscriptions/${data.azurerm_client_config.current.subscription_id}"
+  role_definition_name = "Security Reader"
+  principal_id         = azurerm_linux_web_app.app.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "webapp_staging_security_reader" {
+  scope                = "/subscriptions/${data.azurerm_client_config.current.subscription_id}"
+  role_definition_name = "Security Reader"
+  principal_id         = azurerm_linux_web_app_slot.staging.identity[0].principal_id
+}
+
+# Azure Policy — Policy Insights Data Writer (Preview) at subscription scope.
+# Required for the AI Guardian Policy tab to call:
+#   az policy state list --resource-group ...
+# This is the built-in role that grants Microsoft.PolicyInsights/policyStates/* access.
+# Despite its name it is read-only for our use case; the "Writer" suffix refers to
+# writing compliance data back from guest configuration, which we don't use.
+resource "azurerm_role_assignment" "webapp_policy_insights" {
+  scope                = "/subscriptions/${data.azurerm_client_config.current.subscription_id}"
+  role_definition_name = "Policy Insights Data Writer (Preview)"
+  principal_id         = azurerm_linux_web_app.app.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "webapp_staging_policy_insights" {
+  scope                = "/subscriptions/${data.azurerm_client_config.current.subscription_id}"
+  role_definition_name = "Policy Insights Data Writer (Preview)"
+  principal_id         = azurerm_linux_web_app_slot.staging.identity[0].principal_id
+}
+
 # IoT Hub data plane roles — separate from ARM-level Contributor.
 # Without these, portal device listing and az iot CLI commands return
 # IotHubUnauthorizedAccess even when the user has ARM Owner/Contributor.
