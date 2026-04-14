@@ -1053,42 +1053,53 @@ def call_azure_openai(system_prompt: str, user_message: str) -> dict[str, Any]:
     return parse_json_response_text((choices[0].get("message") or {}).get("content", ""))
 
 
-_AI_ANALYSIS_SYSTEM_PROMPT = """\
+def _build_ai_analysis_prompt() -> str:
+    catalog = build_fix_catalog()
+    actions_doc = "\n".join(
+        f'  - "{e["fix_type"]}": {e["label"]} (available: {e["available"]})'
+        for e in catalog
+    )
+    return f"""\
 You are an expert software engineer analyzing Azure App Insights error logs.
 
 Explain each error in plain, simple English — as if telling a developer what broke and why.
 No jargon. No Azure-specific terms unless necessary. Be concise.
 
 Return JSON exactly matching this schema:
-{
+{{
   "issues": [
-    {
+    {{
       "issue_id": "err-N",
       "title": "Short plain-English title (max 10 words)",
       "what_happened": "One sentence: what broke, in simple terms",
       "why_it_occurred": "One sentence: the root cause",
       "affected_resource": "The specific service, resource, or component that failed",
       "severity": "critical|high|medium|low",
-      "code_location": {
+      "code_location": {{
         "file_path": "",
         "line_number": 0,
         "function_name": ""
-      },
-      "suggested_fix": {
+      }},
+      "suggested_fix": {{
         "description": "Plain English: what to change to fix this",
         "is_code_change": false,
-        "fix_type": "short description of the fix action"
-      }
-    }
+        "fix_action": "one of the fix_action keys listed below"
+      }}
+    }}
   ]
-}
+}}
+
+Available fix actions — you must pick exactly one for suggested_fix.fix_action:
+{actions_doc}
 
 Rules:
 - Simple words. "The database ran out of connections" not "Connection pool exhaustion occurred".
 - code_location.file_path must come from the error stack trace only — never guess.
+- If a file_path is from a third-party library (e.g. site-packages, /usr/local/lib) it is NOT your code — do not set is_code_change = true for it.
 - Some issues include a "code_snippet" field with the actual source code around the error line. Use it to write a precise, specific suggested_fix.description that references the real variable names and logic you can see.
-- suggested_fix.is_code_change = true whenever code_location.file_path is present and the error is a code-level bug (KeyError, AttributeError, TypeError, ValueError, IndexError, unhandled exception in application code, missing field, null check, etc.) where editing the source file would fix it. These errors should ALWAYS be code fixes, not restarts.
-- suggested_fix.is_code_change = false only for infrastructure issues: service unavailable, connection timeout, out of memory, disk full, external API down, certificate expired.
+- suggested_fix.is_code_change = true whenever code_location.file_path is your application code (not a library) and the error is a code-level bug (KeyError, AttributeError, TypeError, ValueError, IndexError, unhandled exception, missing field, null check, etc.). These should ALWAYS be code fixes, not restarts.
+- suggested_fix.is_code_change = false for infrastructure issues (service down, connection timeout, out of memory, disk full, external API down, certificate expired) or third-party library errors. Pick the most appropriate fix_action from the list above.
+- If none of the infrastructure actions make sense (e.g. transient network blip, third-party timeout, self-healing issue), pick "manual_investigation".
 - severity: critical = users cannot use the app, high = intermittent failures, medium = degraded, low = no user impact."""
 
 
@@ -1194,7 +1205,7 @@ def analyze_errors_with_ai(rows: list[dict[str, Any]]) -> dict[str, dict[str, An
                 issue["code_snippet"] = f"# {file_path} (around line {line_number})\n{snippet}"
         issues_payload.append(issue)
 
-    result = call_azure_openai(_AI_ANALYSIS_SYSTEM_PROMPT, json_dumps_compact({"issues": issues_payload}))
+    result = call_azure_openai(_build_ai_analysis_prompt(), json_dumps_compact({"issues": issues_payload}))
     return {
         sanitize_text(item.get("issue_id")): item
         for item in (result.get("issues") or [])
@@ -1383,8 +1394,9 @@ def load_recent_error_operations(minutes: int = 60, limit: int = 12) -> list[dic
         error_type = str(row.get("ErrorType", ""))
         message = str(row.get("ExampleMessage", ""))
         count = int(row.get("Count", 0) or 0)
-        fix = classify_error_fix(source_table, error_type, message)
         ai = ai_by_id.get(issue_id, {})
+        ai_fix_action = sanitize_text((ai.get("suggested_fix") or {}).get("fix_action", "")) or "manual_investigation"
+        fix = build_fix_metadata(ai_fix_action)
 
         # Code location: prefer AI-extracted (from stack trace analysis), fall back to regex
         ai_loc = ai.get("code_location") or {}
@@ -1440,7 +1452,7 @@ def load_recent_error_operations(minutes: int = 60, limit: int = 12) -> list[dic
                 "ai_fix": {
                     "description": sanitize_text(ai_fix.get("description")) or fix["reason"],
                     "is_code_change": bool(ai_fix.get("is_code_change") and file_path and line_number and line_number != "0"),
-                    "fix_type": sanitize_text(ai_fix.get("fix_type")) or fix["fix_type"],
+                    "fix_type": fix["fix_type"],
                 },
                 "fix": fix,
                 "affected_resources": affected_resources,
