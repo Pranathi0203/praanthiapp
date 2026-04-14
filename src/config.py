@@ -1,0 +1,55 @@
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+APP_SECRET = os.getenv("APP_SECRET", "change-me")
+APPINSIGHTS_CONNECTION_STRING = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
+APPLICATION_INSIGHTS_NAME = os.getenv("APPLICATION_INSIGHTS_NAME", os.getenv("APP_INSIGHTS_NAME", ""))
+LOG_ANALYTICS_WORKSPACE_ID = os.getenv("LOG_ANALYTICS_WORKSPACE_ID", "")
+LOG_ANALYTICS_WORKSPACE_RESOURCE_ID = os.getenv("LOG_ANALYTICS_WORKSPACE_RESOURCE_ID", "")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+GITHUB_DEFAULT_BRANCH = os.getenv("GITHUB_DEFAULT_BRANCH", "main")
+GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", GITHUB_DEFAULT_BRANCH)  # deployed branch, may differ from default
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@pranathi.local").lower()
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me-admin")
+CONTOSO_DOMAIN = os.getenv("CONTOSO_DOMAIN", "contoso.com").lower()
+LITWARE_DOMAIN = os.getenv("LITWARE_DOMAIN", "litware.com").lower()
+CONTOSO_DB_NAME = os.getenv("CONTOSO_DB_NAME", "contoso_db")
+LITWARE_DB_NAME = os.getenv("LITWARE_DB_NAME", "litware_db")
+CONTOSO_DATABASE_URL = os.getenv("CONTOSO_DATABASE_URL", "")
+LITWARE_DATABASE_URL = os.getenv("LITWARE_DATABASE_URL", "")
+REDIS_URL = os.getenv("REDIS_URL", "")
+TENANT_CONNECTION_CACHE_TTL_SECONDS = int(os.getenv("TENANT_CONNECTION_CACHE_TTL_SECONDS", "3600"))
+CONTOSO_DEVICE_CONNECTION_STRING = os.getenv("CONTOSO_DEVICE_CONNECTION_STRING", "")
+LITWARE_DEVICE_CONNECTION_STRING = os.getenv("LITWARE_DEVICE_CONNECTION_STRING", "")
+SESSION_HTTPS_ONLY = os.getenv("SESSION_HTTPS_ONLY", "true").lower() == "true"
+GITHUB_API_URL = os.getenv("GITHUB_API_URL", "https://api.github.com").rstrip("/")
+GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", "Pranathi0203/praanthiapp")
+GITHUB_DASHBOARD_TOKEN = os.getenv("GITHUB_DASHBOARD_TOKEN", "")
+GITHUB_DEPLOY_QA_DEFAULT = os.getenv("GITHUB_DEPLOY_QA_DEFAULT", "false").lower() == "true"
+GITHUB_CI_WORKFLOW = os.getenv("GITHUB_CI_WORKFLOW", "ci-build.yml")
+GITHUB_RELEASE_WORKFLOW = os.getenv("GITHUB_RELEASE_WORKFLOW", "release-pipeline.yml")
+POSTGRES_ADMIN_URL = os.getenv("POSTGRES_ADMIN_URL", "")
+POSTGRES_ADMIN_DB = os.getenv("POSTGRES_ADMIN_DB", "postgres")
+AZURE_SUBSCRIPTION_ID = os.getenv("AZURE_SUBSCRIPTION_ID", "")
+AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP", "")
+AZURE_POSTGRES_SERVER_NAME = os.getenv("AZURE_POSTGRES_SERVER_NAME", "")
+WEBAPP_NAME = os.getenv("WEBAPP_NAME", "")
+FUNCTION_APP_NAME = os.getenv("FUNCTION_APP_NAME", "")
+IOTHUB_NAME = os.getenv("IOTHUB_NAME", "")
+SERVICEBUS_NAMESPACE_NAME = os.getenv("SERVICEBUS_NAMESPACE_NAME", "")
+AZURE_USE_MANAGED_IDENTITY = os.getenv("AZURE_USE_MANAGED_IDENTITY", "true").lower() == "true"
+ALLOW_WEBAPP_RESTART = os.getenv("ALLOW_WEBAPP_RESTART", "true").lower() == "true"
+ALLOW_FUNCTIONAPP_RESTART = os.getenv("ALLOW_FUNCTIONAPP_RESTART", "true").lower() == "true"
+ALLOW_POSTGRES_RESTART = os.getenv("ALLOW_POSTGRES_RESTART", "true").lower() == "true"
+POWERSHELL_EXECUTABLE = os.getenv("POWERSHELL_EXECUTABLE", "pwsh")
+POSTGRES_PLATFORM_ACTION_TIMEOUT_SECONDS = int(
+    os.getenv("POSTGRES_PLATFORM_ACTION_TIMEOUT_SECONDS", "1800")
+)
+DATADOG_SERVICE = os.getenv("DD_SERVICE", "pranathi-app")
+DATADOG_ENV = os.getenv("DD_ENV", os.getenv("ENV", "local"))
+DATADOG_VERSION = os.getenv("DD_VERSION", "")
+DD_TRACE_ENABLED = os.getenv("DD_TRACE_ENABLED", "false").lower() == "true"
